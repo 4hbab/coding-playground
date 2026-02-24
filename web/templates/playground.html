@@ -1,0 +1,138 @@
+{{define "content"}}
+<div class="playground-container">
+    <!-- Left Panel: Editor -->
+    <div class="panel editor-panel">
+        <div class="panel-header">
+            <div class="panel-title">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="16 18 22 12 16 6"></polyline>
+                    <polyline points="8 6 2 12 8 18"></polyline>
+                </svg>
+                <span>Editor</span>
+            </div>
+            <div class="panel-actions">
+                <!-- Snippet Controls -->
+                <div class="snippet-controls">
+                    <select id="snippet-select" class="snippet-select" title="Load Snippet">
+                        <option value="">— Load Snippet —</option>
+                    </select>
+                    <button id="save-btn" class="action-btn save-btn" title="Save Snippet (Ctrl+S)">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                            <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                            <polyline points="7 3 7 8 15 8"></polyline>
+                        </svg>
+                        Save
+                    </button>
+                    <button id="delete-btn" class="action-btn delete-btn" title="Delete Snippet">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2">
+                            </path>
+                        </svg>
+                    </button>
+                </div>
+                <!-- Run Button -->
+                <button id="run-btn" class="run-btn" title="Run Code (Ctrl+Enter)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                        <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                    </svg>
+                    <span>Run</span>
+                </button>
+            </div>
+        </div>
+        <div id="editor-container" class="editor-container">
+            <!-- Monaco Editor will be mounted here -->
+            <div id="editor-loading" class="editor-loading">
+                <div class="spinner"></div>
+                <span>Loading editor...</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Resize Handle -->
+    <div class="resize-handle" id="resize-handle">
+        <div class="resize-dots">
+            <span></span><span></span><span></span>
+        </div>
+    </div>
+
+    <!-- Right Panel: Output -->
+    <div class="panel output-panel">
+        <div class="panel-header">
+            <div class="panel-title">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="4 17 10 11 4 5"></polyline>
+                    <line x1="12" y1="19" x2="20" y2="19"></line>
+                </svg>
+                <span>Output</span>
+                <span id="exec-time" class="exec-time" style="display:none"></span>
+            </div>
+            <div class="panel-actions">
+                <div id="status-indicator" class="status-indicator">
+                    <span class="status-dot"></span>
+                    <span id="status-text">Ready</span>
+                </div>
+                <button id="clear-btn" class="action-btn" title="Clear Output (Ctrl+L)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                    Clear
+                </button>
+            </div>
+        </div>
+        <div id="output-container" class="output-container">
+            <pre id="output" class="output-content"><span class="output-welcome">Welcome to PyPlayground! 🐍
+
+Write Python code in the editor and click Run (or press Ctrl+Enter).
+
+Try this:
+  print("Hello, World!")
+  print(2 + 2)
+  
+  for i in range(5):
+      print(f"Count: {i}")
+</span></pre>
+        </div>
+        <!-- Loading Overlay -->
+        <div id="loading-overlay" class="loading-overlay" style="display:none">
+            <div class="spinner"></div>
+            <span>Running code...</span>
+        </div>
+    </div>
+</div>
+
+<!-- WASM Not Supported Message -->
+<div id="wasm-error" class="wasm-error" style="display:none">
+    <div class="wasm-error-content">
+        <h2>⚠️ WebAssembly Not Supported</h2>
+        <p>Your browser doesn't support WebAssembly, which is required to run Python code.</p>
+        <p>Please use a modern browser like Chrome, Firefox, Safari, or Edge.</p>
+    </div>
+</div>
+
+<!-- Save Snippet Modal -->
+<div id="save-modal" class="modal-overlay" style="display:none">
+    <div class="modal">
+        <div class="modal-header">
+            <h3>Save Snippet</h3>
+            <button class="modal-close" id="save-modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <label for="snippet-name" class="input-label">Snippet Name</label>
+            <input type="text" id="snippet-name" class="text-input" placeholder="e.g., fibonacci, hello-world"
+                autocomplete="off">
+        </div>
+        <div class="modal-footer">
+            <button id="save-confirm" class="run-btn">Save</button>
+            <button id="save-cancel" class="action-btn">Cancel</button>
+        </div>
+    </div>
+</div>
+{{end}}
