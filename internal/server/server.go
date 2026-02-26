@@ -12,6 +12,14 @@
 // - Testable (we can create a test server without running main)
 // - Reusable (multiple entry points could use the same server config)
 // - Clean (main.go stays minimal — just "start the server")
+//
+// DEPENDENCY INJECTION FLOW (UPDATED):
+// main.go creates:
+//   DB path (config) → passed to Server
+//   Server.New() creates: sqlite.DB → SnippetService → SnippetHandler
+//
+// This is the "composition root" pattern — all dependencies are wired
+// in one place (New/setupRoutes), rather than scattered across the codebase.
 package server
 
 import (
@@ -29,6 +37,8 @@ import (
 
 	"github.com/sakif/coding-playground/internal/handler"
 	"github.com/sakif/coding-playground/internal/middleware"
+	sqliteRepo "github.com/sakif/coding-playground/internal/repository/sqlite"
+	"github.com/sakif/coding-playground/internal/service"
 )
 
 // Config holds server configuration.
@@ -40,32 +50,56 @@ type Config struct {
 	Port        int
 	TemplateDir string
 	StaticDir   string
+	DBPath      string // NEW: path to the SQLite database file
 }
 
 // Server represents the HTTP server and all its dependencies.
+//
+// RESOURCE MANAGEMENT:
+// The Server now owns a database connection (db). When the server shuts down,
+// we must close this connection to flush any pending writes and release the file lock.
+// This is handled in Start() during graceful shutdown.
 type Server struct {
 	router *chi.Mux
 	config Config
 	logger *slog.Logger
+	db     *sqliteRepo.DB // NEW: database connection (owned by server, closed on shutdown)
 }
 
 // New creates a new Server with the given config.
 //
-// DEPENDENCY INJECTION:
-// Instead of creating dependencies inside the Server, we accept them as parameters.
-// This is dependency injection — the caller "injects" what the server needs.
-// Benefits:
-// - Testing: pass a mock logger, different config
-// - Flexibility: swap implementations without changing Server code
+// DEPENDENCY INJECTION & WIRING:
+// This is where the entire dependency chain is assembled:
+//   1. Create the database connection (sqlite.New)
+//   2. Create the service layer (service.NewSnippetService) with the DB
+//   3. Create the handler (handler.NewSnippetHandler) with the service
+//   4. Wire handlers to routes
+//
+// Each layer only receives what it needs:
+// - Service gets the repository interface (not the concrete sqlite.DB)
+// - Handler gets the service (not the repository or DB)
+//
+// IMPORT ALIAS:
+// We import repository/sqlite as `sqliteRepo` to avoid confusion with
+// the sqlite driver package. Import aliases are common in Go when
+// package names would otherwise collide or be unclear.
 func New(cfg Config, logger *slog.Logger) (*Server, error) {
+	// === CREATE DATABASE ===
+	db, err := sqliteRepo.New(cfg.DBPath)
+	if err != nil {
+		return nil, fmt.Errorf("opening database: %w", err)
+	}
+
 	s := &Server{
 		router: chi.NewRouter(),
 		config: cfg,
 		logger: logger,
+		db:     db,
 	}
 
 	// Set up middleware and routes
 	if err := s.setupRoutes(); err != nil {
+		db.Close() // Clean up DB if route setup fails
 		return nil, fmt.Errorf("setting up routes: %w", err)
 	}
 
@@ -74,12 +108,14 @@ func New(cfg Config, logger *slog.Logger) (*Server, error) {
 
 // setupRoutes configures all middleware and route handlers.
 //
-// ROUTE STRUCTURE:
-// GET  /              → Playground page (HTML)
-// GET  /static/*      → Static files (CSS, JS, images)
-// GET  /api/snippets  → List snippets (JSON)
-// POST /api/snippets  → Create snippet (JSON)
-// DELETE /api/snippets/{id} → Delete snippet
+// ROUTE STRUCTURE (UPDATED):
+// GET    /                      → Playground page (HTML)
+// GET    /static/*              → Static files (CSS, JS, images)
+// GET    /api/snippets          → List snippets (JSON)
+// GET    /api/snippets/{id}     → Get single snippet (JSON)  [NEW]
+// POST   /api/snippets          → Create snippet (JSON)
+// PUT    /api/snippets/{id}     → Update snippet (JSON)      [NEW]
+// DELETE /api/snippets/{id}     → Delete snippet
 //
 // MIDDLEWARE ORDER MATTERS:
 // Middleware executes in the order it's added. Our order:
@@ -113,13 +149,22 @@ func (s *Server) setupRoutes() error {
 	}
 	s.router.Get("/", playgroundHandler.HandlePlayground)
 
-	// === API Routes ===
-	// chi.Route() creates a sub-router for a path prefix.
-	// All routes inside share the "/api" prefix.
-	snippetHandler := handler.NewSnippetHandler(s.logger)
+	// === API Routes (UPDATED) ===
+	// DEPENDENCY CHAIN:
+	//   s.db (sqlite.DB) → implements repository.SnippetRepository
+	//   SnippetService receives the repository interface
+	//   SnippetHandler receives the service
+	//
+	// Notice: the handler never touches the database directly.
+	// The service never touches HTTP. Clean separation!
+	snippetService := service.NewSnippetService(s.db, s.logger)
+	snippetHandler := handler.NewSnippetHandler(snippetService, s.logger)
+
 	s.router.Route("/api", func(r chi.Router) {
 		r.Get("/snippets", snippetHandler.HandleList)
+		r.Get("/snippets/{id}", snippetHandler.HandleGetByID) // NEW
 		r.Post("/snippets", snippetHandler.HandleCreate)
+		r.Put("/snippets/{id}", snippetHandler.HandleUpdate) // NEW
 		r.Delete("/snippets/{id}", snippetHandler.HandleDelete)
 	})
 
@@ -128,26 +173,19 @@ func (s *Server) setupRoutes() error {
 
 // Start starts the HTTP server and handles graceful shutdown.
 //
-// GRACEFUL SHUTDOWN:
-// When you press Ctrl+C (or the OS sends SIGTERM), we don't want to immediately kill
-// the server — that could interrupt in-flight requests. Instead:
+// GRACEFUL SHUTDOWN (UPDATED):
+// Now that we have a database connection, shutdown is more important:
+// 1. Stop accepting new HTTP connections
+// 2. Wait for in-flight requests to finish (30s timeout)
+// 3. Close the database connection (flushes WAL, releases file lock)
 //
-// 1. We listen for OS signals (SIGINT, SIGTERM) in a goroutine
-// 2. When a signal arrives, we call server.Shutdown() with a timeout
-// 3. Shutdown() stops accepting new connections and waits for existing ones to finish
-// 4. If they don't finish within the timeout, we force-close
-//
-// GOROUTINES:
-// A goroutine is a lightweight thread managed by Go's runtime. We create one with `go func()`.
-// go func() { ... }() — this creates and immediately starts a goroutine.
-// They're incredibly cheap (a few KB of stack) compared to OS threads (1+ MB).
-//
-// CHANNELS:
-// `make(chan os.Signal, 1)` creates a buffered channel that can hold one signal.
-// Channels are Go's primary mechanism for communication between goroutines.
-// `signal.Notify(quit, ...)` tells Go to send OS signals to our channel.
-// `<-quit` blocks until a value is received from the channel.
+// If we skip step 3, the database file might be left in an inconsistent state.
+// The `defer s.db.Close()` ensures this happens even if something panics.
 func (s *Server) Start() error {
+	// Ensure the database is closed when the server stops.
+	// This runs AFTER everything else in this function finishes.
+	defer s.db.Close()
+
 	// Create the HTTP server with sensible timeouts
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", s.config.Port),
@@ -169,6 +207,7 @@ func (s *Server) Start() error {
 		s.logger.Info("server starting",
 			slog.Int("port", s.config.Port),
 			slog.String("url", fmt.Sprintf("http://localhost:%d", s.config.Port)),
+			slog.String("database", s.config.DBPath),
 		)
 		serverErrors <- srv.ListenAndServe()
 	}()

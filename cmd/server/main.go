@@ -62,13 +62,37 @@ func main() {
 	templateDir, _ := filepath.Abs("web/templates")
 	staticDir, _ := filepath.Abs("web/static")
 
-	// === 4. CREATE AND START THE SERVER ===
+	// === 4. DATABASE PATH ===
+	// Default to "data/playground.db" in the project root.
+	// The "data" directory will be created automatically by os.MkdirAll if it doesn't exist.
+	//
+	// DB_PATH env var allows overriding for production deployments.
+	// Example: DB_PATH=/var/lib/playground/prod.db
+	dbPath := "data/playground.db"
+	if envDB := os.Getenv("DB_PATH"); envDB != "" {
+		dbPath = envDB
+	}
+
+	// Ensure the data directory exists.
+	// os.MkdirAll creates all parent directories if needed (like `mkdir -p`).
+	// 0755 = owner can read/write/execute, others can read/execute.
+	dbDir := filepath.Dir(dbPath)
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		logger.Error("failed to create database directory",
+			slog.String("dir", dbDir),
+			slog.String("error", err.Error()),
+		)
+		os.Exit(1)
+	}
+
+	// === 5. CREATE AND START THE SERVER ===
 	// We create the server config, build the server, and start it.
 	// If anything fails, we log the error and exit with code 1 (non-zero = error).
 	cfg := server.Config{
 		Port:        port,
 		TemplateDir: templateDir,
 		StaticDir:   staticDir,
+		DBPath:      dbPath,
 	}
 
 	srv, err := server.New(cfg, logger)
