@@ -1,117 +1,161 @@
 // ===================================================================
-// snippets.js — Local Storage Snippet Management
+// snippets.js — Server API Snippet Management
 // ===================================================================
 // This module handles saving/loading/deleting code snippets using
-// the browser's localStorage API.
+// the Go backend API instead of browser localStorage.
 //
-// localStorage:
-// - Key-value store in the browser (max ~5-10MB depending on browser)
-// - Data persists across page reloads and browser restarts
-// - Synchronous API (fast for small data)
-// - Scoped to the origin (protocol + domain + port)
+// MIGRATION FROM localStorage TO SERVER API:
+// Before: snippets were stored in the browser's localStorage.
+//   - Data was local only — different browsers/devices couldn't share
+//   - Data could be lost if the user cleared browser data
+//   - No collaboration possible
 //
-// We store all snippets under a single key as a JSON array.
+// After: snippets are stored in SQLite via the Go server API.
+//   - Data persists on the server, survives browser clears
+//   - Foundation for multi-user/multi-device access
+//   - Same data available from any browser pointed at the server
+//
+// KEY CHANGE: All functions are now ASYNC.
+// localStorage was synchronous (instant, blocking).
+// fetch() is asynchronous (returns a Promise, non-blocking).
+// Callers must use `await` or `.then()` to get results.
+//
+// THE fetch() API:
+// fetch() is the modern way to make HTTP requests from JavaScript.
+//   - Returns a Promise that resolves to a Response object
+//   - Response.ok is true for 2xx status codes
+//   - Response.json() parses the body as JSON (also returns a Promise!)
+//   - By default, fetch() uses GET. Pass { method: 'POST', ... } for others.
 // ===================================================================
 
-const STORAGE_KEY = 'pyplayground_snippets';
+const API_BASE = '/api';
 
 /**
- * Get all saved snippets from localStorage.
- * @returns {Array<{id: string, name: string, code: string, createdAt: string, updatedAt: string}>}
+ * Get all saved snippets from the server.
+ *
+ * fetch() FLOW:
+ * 1. Browser sends GET /api/snippets to the Go server
+ * 2. Go handler calls service.List() → repository.List() → SQLite SELECT
+ * 3. Server responds with JSON array of snippets
+ * 4. We parse the JSON and return the array
+ *
+ * @returns {Promise<Array>} Array of snippet objects
  */
-function getSnippets() {
+async function getSnippets() {
     try {
-        const data = localStorage.getItem(STORAGE_KEY);
-        return data ? JSON.parse(data) : [];
+        const response = await fetch(`${API_BASE}/snippets`);
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.message || 'Failed to load snippets');
+        }
+
+        return await response.json();
     } catch (err) {
-        console.error('Failed to read snippets:', err);
+        console.error('Failed to fetch snippets:', err);
         return [];
     }
 }
 
 /**
- * Save a snippet to localStorage.
- * If a snippet with the same name exists, it will be updated.
+ * Save a new snippet to the server.
+ *
+ * POST REQUEST:
+ * To send data TO the server, we use POST with a JSON body.
+ * The fetch() options object specifies:
+ *   - method: 'POST' (default is GET)
+ *   - headers: tells the server we're sending JSON
+ *   - body: the actual JSON data (must be a string, hence JSON.stringify)
  *
  * @param {string} name - The snippet name
  * @param {string} code - The Python code
- * @returns {{success: boolean, error?: string}}
+ * @returns {Promise<{success: boolean, snippet?: object, error?: string}>}
  */
-function saveSnippet(name, code) {
+async function saveSnippet(name, code) {
     try {
         if (!name || !name.trim()) {
             return { success: false, error: 'Snippet name cannot be empty' };
         }
 
-        const snippets = getSnippets();
-        const now = new Date().toISOString();
-
-        // Check if snippet with this name already exists
-        const existing = snippets.findIndex(s => s.name === name.trim());
-
-        if (existing >= 0) {
-            // Update existing snippet
-            snippets[existing].code = code;
-            snippets[existing].updatedAt = now;
-        } else {
-            // Create new snippet with a unique ID
-            snippets.push({
-                id: generateId(),
+        const response = await fetch(`${API_BASE}/snippets`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
                 name: name.trim(),
                 code: code,
-                createdAt: now,
-                updatedAt: now,
-            });
+            }),
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            return { success: false, error: error.message || 'Failed to save snippet' };
         }
 
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(snippets));
-        return { success: true };
+        const snippet = await response.json();
+        return { success: true, snippet };
     } catch (err) {
-        // Handle localStorage quota exceeded
-        if (err.name === 'QuotaExceededError' || err.code === 22) {
-            return { success: false, error: 'Storage is full! Please delete some snippets to free up space.' };
-        }
         return { success: false, error: `Failed to save: ${err.message}` };
     }
 }
 
 /**
- * Load a snippet by its ID.
+ * Load a snippet by its ID from the server.
+ *
+ * URL PARAMETERS:
+ * We append the ID to the URL: /api/snippets/{id}
+ * The Go router extracts {id} using r.PathValue("id")
+ *
  * @param {string} id - The snippet ID
- * @returns {object|null}
+ * @returns {Promise<object|null>}
  */
-function loadSnippet(id) {
-    const snippets = getSnippets();
-    return snippets.find(s => s.id === id) || null;
-}
-
-/**
- * Delete a snippet by its ID.
- * @param {string} id - The snippet ID
- * @returns {{success: boolean, error?: string}}
- */
-function deleteSnippet(id) {
+async function loadSnippet(id) {
     try {
-        let snippets = getSnippets();
-        const before = snippets.length;
-        snippets = snippets.filter(s => s.id !== id);
+        const response = await fetch(`${API_BASE}/snippets/${id}`);
 
-        if (snippets.length === before) {
-            return { success: false, error: 'Snippet not found' };
+        if (!response.ok) {
+            if (response.status === 404) {
+                console.warn(`Snippet ${id} not found`);
+                return null;
+            }
+            throw new Error('Failed to load snippet');
         }
 
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(snippets));
-        return { success: true };
+        return await response.json();
     } catch (err) {
-        return { success: false, error: `Failed to delete: ${err.message}` };
+        console.error('Failed to load snippet:', err);
+        return null;
     }
 }
 
 /**
- * Generate a short unique ID.
- * Uses a combination of timestamp and random characters.
- * @returns {string}
+ * Delete a snippet by its ID.
+ *
+ * DELETE METHOD:
+ * HTTP DELETE is the standard method for removing resources.
+ * On success, the server returns 204 No Content (empty body).
+ * We don't try to parse JSON from a 204 response — there is none.
+ *
+ * @param {string} id - The snippet ID
+ * @returns {Promise<{success: boolean, error?: string}>}
  */
-function generateId() {
-    return Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+async function deleteSnippet(id) {
+    try {
+        const response = await fetch(`${API_BASE}/snippets/${id}`, {
+            method: 'DELETE',
+        });
+
+        if (!response.ok) {
+            // Don't try to parse body for 204 (no content)
+            if (response.status !== 204) {
+                const error = await response.json();
+                return { success: false, error: error.message || 'Failed to delete snippet' };
+            }
+        }
+
+        return { success: true };
+    } catch (err) {
+        return { success: false, error: `Failed to delete: ${err.message}` };
+    }
 }
