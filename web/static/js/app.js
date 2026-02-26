@@ -7,7 +7,7 @@
 // ARCHITECTURE:
 // - editor.js    → Monaco Editor (code input)
 // - pyodide-worker.js → Web Worker (Python execution)
-// - snippets.js  → localStorage (save/load snippets)
+// - snippets.js  → Server API (save/load snippets via fetch)
 // - app.js       → THIS FILE (glue + UI logic)
 //
 // The app follows a simple event-driven pattern:
@@ -88,8 +88,8 @@ document.addEventListener('DOMContentLoaded', async function () {
     // 5. Set up event listeners
     setupEventListeners();
 
-    // 6. Load saved snippets into the dropdown
-    refreshSnippetList();
+    // 6. Load saved snippets into the dropdown (async — fetches from server)
+    await refreshSnippetList();
 
     // 7. Restore theme preference
     restoreTheme();
@@ -332,8 +332,19 @@ function showToast(message, type) {
 // SNIPPET MANAGEMENT UI
 // ===================================================================
 
-function refreshSnippetList() {
-    const snippets = getSnippets();
+// refreshSnippetList is now ASYNC because getSnippets() calls the server API.
+//
+// ASYNC/AWAIT:
+// When a function is marked `async`, it always returns a Promise.
+// Inside an async function, `await` pauses execution until the Promise resolves.
+// This lets us write asynchronous code that READS like synchronous code:
+//
+//   const snippets = await getSnippets();  ← pauses here until server responds
+//   snippets.forEach(...)                  ← runs after data arrives
+//
+// Without async/await, we'd need nested .then() callbacks ("callback hell").
+async function refreshSnippetList() {
+    const snippets = await getSnippets();
     const select = elements.snippetSelect;
 
     // Clear existing options (keep the placeholder)
@@ -358,7 +369,13 @@ function closeSaveModal() {
     elements.saveModal.style.display = 'none';
 }
 
-function confirmSave() {
+// confirmSave is now ASYNC because saveSnippet() calls the server API.
+//
+// TRY/CATCH WITH ASYNC:
+// With async/await, errors are handled using try/catch (just like synchronous code).
+// If the fetch() fails or the server returns an error, it goes to the catch block.
+// This is much cleaner than .then().catch() chains.
+async function confirmSave() {
     const name = elements.snippetName.value.trim();
     if (!name) {
         showToast('Please enter a snippet name', 'error');
@@ -366,42 +383,44 @@ function confirmSave() {
     }
 
     const code = getEditorCode();
-    const result = saveSnippet(name, code);
+    const result = await saveSnippet(name, code);
 
     if (result.success) {
         showToast(`Snippet "${name}" saved!`, 'success');
-        refreshSnippetList();
+        await refreshSnippetList();
         closeSaveModal();
     } else {
         showToast(result.error, 'error');
     }
 }
 
-function loadSelectedSnippet() {
+async function loadSelectedSnippet() {
     const id = elements.snippetSelect.value;
     if (!id) return;
 
-    const snippet = loadSnippet(id);
+    const snippet = await loadSnippet(id);
     if (snippet) {
         setEditorCode(snippet.code);
         showToast(`Loaded "${snippet.name}"`, 'success');
     }
 }
 
-function deleteSelectedSnippet() {
+async function deleteSelectedSnippet() {
     const id = elements.snippetSelect.value;
     if (!id) {
         showToast('Select a snippet to delete', 'error');
         return;
     }
 
-    const snippet = loadSnippet(id);
+    // Fetch the snippet name for the confirmation dialog.
+    // We need to await this since loadSnippet is now async.
+    const snippet = await loadSnippet(id);
     if (snippet && confirm(`Delete snippet "${snippet.name}"?`)) {
-        const result = deleteSnippet(id);
+        const result = await deleteSnippet(id);
         if (result.success) {
             showToast(`Deleted "${snippet.name}"`, 'success');
             elements.snippetSelect.value = '';
-            refreshSnippetList();
+            await refreshSnippetList();
         } else {
             showToast(result.error, 'error');
         }
