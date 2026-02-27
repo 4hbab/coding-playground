@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/sakif/coding-playground/internal/executor/docker"
 	"github.com/sakif/coding-playground/internal/server"
 )
 
@@ -85,7 +86,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	// === 5. CREATE AND START THE SERVER ===
+	// === 5. INITIALIZE EXECUTOR ===
+	exec, err := docker.New(docker.DefaultConfig(), logger)
+	if err != nil {
+		logger.Error("failed to create docker executor", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	defer exec.Close()
+
+	// === 6. CREATE AND START THE SERVER ===
 	// We create the server config, build the server, and start it.
 	// If anything fails, we log the error and exit with code 1 (non-zero = error).
 	cfg := server.Config{
@@ -95,7 +104,7 @@ func main() {
 		DBPath:      dbPath,
 	}
 
-	srv, err := server.New(cfg, logger)
+	srv, err := server.New(cfg, logger, exec)
 	if err != nil {
 		logger.Error("failed to create server", slog.String("error", err.Error()))
 		os.Exit(1)
