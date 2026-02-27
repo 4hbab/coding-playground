@@ -15,8 +15,9 @@
 //
 // DEPENDENCY INJECTION FLOW (UPDATED):
 // main.go creates:
-//   DB path (config) → passed to Server
-//   Server.New() creates: sqlite.DB → SnippetService → SnippetHandler
+//
+//	DB path (config) → passed to Server
+//	Server.New() creates: sqlite.DB → SnippetService → SnippetHandler
 //
 // This is the "composition root" pattern — all dependencies are wired
 // in one place (New/setupRoutes), rather than scattered across the codebase.
@@ -35,6 +36,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
+	"github.com/sakif/coding-playground/internal/executor"
 	"github.com/sakif/coding-playground/internal/handler"
 	"github.com/sakif/coding-playground/internal/middleware"
 	sqliteRepo "github.com/sakif/coding-playground/internal/repository/sqlite"
@@ -64,16 +66,17 @@ type Server struct {
 	config Config
 	logger *slog.Logger
 	db     *sqliteRepo.DB // NEW: database connection (owned by server, closed on shutdown)
+	exec   executor.Executor
 }
 
 // New creates a new Server with the given config.
 //
 // DEPENDENCY INJECTION & WIRING:
 // This is where the entire dependency chain is assembled:
-//   1. Create the database connection (sqlite.New)
-//   2. Create the service layer (service.NewSnippetService) with the DB
-//   3. Create the handler (handler.NewSnippetHandler) with the service
-//   4. Wire handlers to routes
+//  1. Create the database connection (sqlite.New)
+//  2. Create the service layer (service.NewSnippetService) with the DB
+//  3. Create the handler (handler.NewSnippetHandler) with the service
+//  4. Wire handlers to routes
 //
 // Each layer only receives what it needs:
 // - Service gets the repository interface (not the concrete sqlite.DB)
@@ -83,7 +86,7 @@ type Server struct {
 // We import repository/sqlite as `sqliteRepo` to avoid confusion with
 // the sqlite driver package. Import aliases are common in Go when
 // package names would otherwise collide or be unclear.
-func New(cfg Config, logger *slog.Logger) (*Server, error) {
+func New(cfg Config, logger *slog.Logger, exec executor.Executor) (*Server, error) {
 	// === CREATE DATABASE ===
 	db, err := sqliteRepo.New(cfg.DBPath)
 	if err != nil {
@@ -95,6 +98,7 @@ func New(cfg Config, logger *slog.Logger) (*Server, error) {
 		config: cfg,
 		logger: logger,
 		db:     db,
+		exec:   exec,
 	}
 
 	// Set up middleware and routes
@@ -159,6 +163,7 @@ func (s *Server) setupRoutes() error {
 	// The service never touches HTTP. Clean separation!
 	snippetService := service.NewSnippetService(s.db, s.logger)
 	snippetHandler := handler.NewSnippetHandler(snippetService, s.logger)
+	executeHandler := handler.NewExecuteHandler(s.exec, s.logger)
 
 	s.router.Route("/api", func(r chi.Router) {
 		r.Get("/snippets", snippetHandler.HandleList)
@@ -166,6 +171,8 @@ func (s *Server) setupRoutes() error {
 		r.Post("/snippets", snippetHandler.HandleCreate)
 		r.Put("/snippets/{id}", snippetHandler.HandleUpdate) // NEW
 		r.Delete("/snippets/{id}", snippetHandler.HandleDelete)
+
+		r.Post("/execute", executeHandler.HandleExecute)
 	})
 
 	return nil
