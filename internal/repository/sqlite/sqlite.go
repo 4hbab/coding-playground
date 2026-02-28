@@ -123,40 +123,130 @@ func (db *DB) Close() error {
 	return db.conn.Close()
 }
 
-// migrate runs all database migrations.
+// migrate runs all database migrations in version order.
 //
-// MIGRATIONS IN PRODUCTION:
-// For a learning project, embedding SQL as string constants is fine.
-// In production, you'd use a migration tool like golang-migrate which:
-// - Numbers migrations (001_create_users.sql, 002_add_email.sql)
-// - Tracks which migrations have run (in a schema_migrations table)
-// - Supports "up" (apply) and "down" (rollback) directions
-// - Prevents running the same migration twice
+// VERSIONED MIGRATIONS:
+// We use a `schema_version` table to track which migrations have run.
+// Each migration is assigned a version number and only runs once.
+// This is a lightweight alternative to golang-migrate — same idea, simpler code.
 //
-// For now, CREATE TABLE IF NOT EXISTS is safe — it won't error if the table exists.
+// WHY NOT "CREATE TABLE IF NOT EXISTS" FOR EVERYTHING?
+// That works for new tables, but "ALTER TABLE ... ADD COLUMN" errors if the
+// column already exists. A version counter solves this cleanly: we only run
+// each ALTER once, and subsequent app restarts skip already-applied migrations.
+//
+// Migration history:
+//   v1 — create snippets table (original schema)
+//   v2 — create users table + add user_id FK column to snippets
 func (db *DB) migrate() error {
-	// ExecContext runs a SQL statement that doesn't return rows.
-	// We use Exec (not Query) because CREATE TABLE doesn't return data.
-	//
-	// The schema design choices:
-	// - TEXT PRIMARY KEY: we use generated string IDs (xid), not auto-increment integers
-	// - NOT NULL + DEFAULT: ensures every row has valid data
-	// - DATETIME: SQLite stores these as text internally, but sorts them correctly
-	// - created_at index: for efficient "list by newest" queries
+	// Bootstrap the schema_version table itself.
+	// This is always safe to run — IF NOT EXISTS is idempotent.
 	_, err := db.conn.Exec(`
-		CREATE TABLE IF NOT EXISTS snippets (
-			id          TEXT PRIMARY KEY,
-			name        TEXT NOT NULL,
-			code        TEXT NOT NULL DEFAULT '',
-			description TEXT NOT NULL DEFAULT '',
-			created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		CREATE TABLE IF NOT EXISTS schema_version (
+			version    INTEGER PRIMARY KEY,
+			applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
-		CREATE INDEX IF NOT EXISTS idx_snippets_created_at ON snippets(created_at);
 	`)
 	if err != nil {
-		return fmt.Errorf("creating snippets table: %w", err)
+		return fmt.Errorf("creating schema_version table: %w", err)
+	}
+
+	// Read the highest applied version (0 if no migrations have run yet).
+	var currentVersion int
+	row := db.conn.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`)
+	if err := row.Scan(&currentVersion); err != nil {
+		return fmt.Errorf("reading schema version: %w", err)
+	}
+
+	// Apply migrations in order. Each migration is a function that receives
+	// the db connection and returns an error.
+	type migration struct {
+		version int
+		name    string
+		up      func() error
+	}
+
+	migrations := []migration{
+		{
+			version: 1,
+			name:    "create snippets table",
+			up: func() error {
+				_, err := db.conn.Exec(`
+					CREATE TABLE IF NOT EXISTS snippets (
+						id          TEXT PRIMARY KEY,
+						name        TEXT NOT NULL,
+						code        TEXT NOT NULL DEFAULT '',
+						description TEXT NOT NULL DEFAULT '',
+						created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+						updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+					);
+					CREATE INDEX IF NOT EXISTS idx_snippets_created_at ON snippets(created_at);
+				`)
+				return err
+			},
+		},
+		{
+			version: 2,
+			name:    "create users table and add user_id to snippets",
+			up: func() error {
+				// Users table — stores GitHub OAuth identities.
+				// github_id has a UNIQUE constraint so one GitHub account = one app account.
+				_, err := db.conn.Exec(`
+					CREATE TABLE IF NOT EXISTS users (
+						id         TEXT PRIMARY KEY,
+						github_id  INTEGER UNIQUE NOT NULL,
+						login      TEXT NOT NULL,
+						email      TEXT NOT NULL DEFAULT '',
+						avatar_url TEXT NOT NULL DEFAULT '',
+						created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+						updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+					);
+					CREATE INDEX IF NOT EXISTS idx_users_github_id ON users(github_id);
+				`)
+				if err != nil {
+					return fmt.Errorf("creating users table: %w", err)
+				}
+
+				// Add user_id as a nullable FK to snippets.
+				// Existing rows will get NULL (= anonymous snippet). That's correct.
+				// ON DELETE SET NULL: if a user is deleted their snippets survive as anonymous.
+				//
+				// NOTE: SQLite requires each ALTER TABLE statement to be separate.
+				_, err = db.conn.Exec(`
+					ALTER TABLE snippets ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
+				`)
+				if err != nil {
+					return fmt.Errorf("adding user_id to snippets: %w", err)
+				}
+
+				_, err = db.conn.Exec(`
+					CREATE INDEX IF NOT EXISTS idx_snippets_user_id ON snippets(user_id);
+				`)
+				return err
+			},
+		},
+	}
+
+	// Run only the migrations that haven't been applied yet.
+	for _, m := range migrations {
+		if m.version <= currentVersion {
+			continue // already applied
+		}
+
+		if err := m.up(); err != nil {
+			return fmt.Errorf("migration v%d (%s): %w", m.version, m.name, err)
+		}
+
+		// Record that this migration has been applied.
+		_, err := db.conn.Exec(
+			`INSERT INTO schema_version (version) VALUES (?)`,
+			m.version,
+		)
+		if err != nil {
+			return fmt.Errorf("recording migration v%d: %w", m.version, err)
+		}
 	}
 
 	return nil
 }
+
