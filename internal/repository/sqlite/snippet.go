@@ -64,13 +64,17 @@ func (db *DB) Create(ctx context.Context, snippet *model.Snippet) error {
 	// INSERT the snippet into the database.
 	// The ? placeholders are filled in order by the arguments after the SQL string.
 	// The driver handles escaping to prevent SQL injection.
+	//
+	// user_id is nullable (*string): passing nil stores NULL in SQLite.
+	// This means anonymous snippets (no owner) are stored with user_id = NULL.
 	_, err := db.conn.ExecContext(ctx,
-		`INSERT INTO snippets (id, name, code, description, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO snippets (id, name, code, description, user_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		snippet.ID,
 		snippet.Name,
 		snippet.Code,
 		snippet.Description,
+		snippet.UserID, // nil → NULL for anonymous snippets
 		snippet.CreatedAt,
 		snippet.UpdatedAt,
 	)
@@ -111,8 +115,10 @@ func (db *DB) GetByID(ctx context.Context, id string) (*model.Snippet, error) {
 
 	// QueryRowContext runs a SELECT and returns at most one row.
 	// The Scan() call reads column values into our struct fields.
+	//
+	// user_id is scanned into a *string: if the DB column is NULL, Go sets it to nil.
 	err := db.conn.QueryRowContext(ctx,
-		`SELECT id, name, code, description, created_at, updated_at
+		`SELECT id, name, code, description, user_id, created_at, updated_at
 		 FROM snippets
 		 WHERE id = ?`,
 		id,
@@ -121,6 +127,7 @@ func (db *DB) GetByID(ctx context.Context, id string) (*model.Snippet, error) {
 		&snippet.Name,
 		&snippet.Code,
 		&snippet.Description,
+		&snippet.UserID, // *string: nil when column is NULL
 		&snippet.CreatedAt,
 		&snippet.UpdatedAt,
 	)
@@ -182,7 +189,7 @@ func (db *DB) List(ctx context.Context, opts repository.ListOptions) ([]model.Sn
 
 	// ORDER BY created_at DESC = newest first
 	rows, err := db.conn.QueryContext(ctx,
-		`SELECT id, name, code, description, created_at, updated_at
+		`SELECT id, name, code, description, user_id, created_at, updated_at
 		 FROM snippets
 		 ORDER BY created_at DESC
 		 LIMIT ? OFFSET ?`,
@@ -208,6 +215,7 @@ func (db *DB) List(ctx context.Context, opts repository.ListOptions) ([]model.Sn
 		var s model.Snippet
 		if err := rows.Scan(
 			&s.ID, &s.Name, &s.Code, &s.Description,
+			&s.UserID, // *string: nil when column is NULL
 			&s.CreatedAt, &s.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("sqlite: scanning snippet row: %w", err)
