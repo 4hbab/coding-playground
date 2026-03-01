@@ -22,9 +22,9 @@
 //   - sql.Rows    — multiple result rows (must be closed!)
 //
 // The pattern is always:
-//   1. sql.Open(driverName, dataSourceName) → creates a pool
-//   2. db.QueryContext / db.ExecContext     → runs queries
-//   3. rows.Scan(&field1, &field2)          → reads results into Go variables
+//  1. sql.Open(driverName, dataSourceName) → creates a pool
+//  2. db.QueryContext / db.ExecContext     → runs queries
+//  3. rows.Scan(&field1, &field2)          → reads results into Go variables
 package sqlite
 
 import (
@@ -127,22 +127,11 @@ func (db *DB) Close() error {
 //
 // MIGRATIONS IN PRODUCTION:
 // For a learning project, embedding SQL as string constants is fine.
-// In production, you'd use a migration tool like golang-migrate which:
-// - Numbers migrations (001_create_users.sql, 002_add_email.sql)
-// - Tracks which migrations have run (in a schema_migrations table)
-// - Supports "up" (apply) and "down" (rollback) directions
-// - Prevents running the same migration twice
+// In production, you'd use golang-migrate which tracks which migrations have run.
 //
 // For now, CREATE TABLE IF NOT EXISTS is safe — it won't error if the table exists.
 func (db *DB) migrate() error {
-	// ExecContext runs a SQL statement that doesn't return rows.
-	// We use Exec (not Query) because CREATE TABLE doesn't return data.
-	//
-	// The schema design choices:
-	// - TEXT PRIMARY KEY: we use generated string IDs (xid), not auto-increment integers
-	// - NOT NULL + DEFAULT: ensures every row has valid data
-	// - DATETIME: SQLite stores these as text internally, but sorts them correctly
-	// - created_at index: for efficient "list by newest" queries
+	// Phase 1: snippets table
 	_, err := db.conn.Exec(`
 		CREATE TABLE IF NOT EXISTS snippets (
 			id          TEXT PRIMARY KEY,
@@ -158,5 +147,56 @@ func (db *DB) migrate() error {
 		return fmt.Errorf("creating snippets table: %w", err)
 	}
 
+	// Phase 3: users table
+	// github_id is UNIQUE — each GitHub account maps to exactly one row.
+	_, err = db.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS users (
+			id         TEXT PRIMARY KEY,
+			github_id  INTEGER NOT NULL UNIQUE,
+			login      TEXT NOT NULL,
+			email      TEXT NOT NULL DEFAULT '',
+			avatar_url TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+	`)
+	if err != nil {
+		return fmt.Errorf("creating users table: %w", err)
+	}
+
+	// Phase 3: add user_id column to snippets (idempotent — safe on existing DBs).
+	// ALTER TABLE errors if the column exists, so we check pragma_table_info first.
+	if err := db.addColumnIfNotExists("snippets", "user_id",
+		"TEXT REFERENCES users(id)"); err != nil {
+		return fmt.Errorf("adding user_id to snippets: %w", err)
+	}
+
+	_, err = db.conn.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_snippets_user_id ON snippets(user_id);
+	`)
+	if err != nil {
+		return fmt.Errorf("creating snippets user_id index: %w", err)
+	}
+
 	return nil
+}
+
+// addColumnIfNotExists adds a column to a table only if it doesn't already exist.
+// Makes ALTER TABLE migrations idempotent — safe to run multiple times.
+func (db *DB) addColumnIfNotExists(table, column, definition string) error {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`,
+		table, column,
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checking column %s.%s: %w", table, column, err)
+	}
+	if count > 0 {
+		return nil // column already exists
+	}
+	_, err = db.conn.Exec(fmt.Sprintf(
+		`ALTER TABLE %s ADD COLUMN %s %s`, table, column, definition,
+	))
+	return err
 }

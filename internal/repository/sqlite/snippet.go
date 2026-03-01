@@ -30,28 +30,28 @@ var _ repository.SnippetRepository = (*DB)(nil)
 //
 // KEY CONCEPTS:
 //
-// 1. ID GENERATION WITH xid:
-//    xid generates globally unique IDs that are:
-//    - 20 chars, URL-safe (no special characters)
-//    - Sortable by creation time (they start with a timestamp)
-//    - Example: "cv37rs3pp9olc6atsptg"
-//    Compare to UUID (36 chars, with dashes): "550e8400-e29b-41d4-a716-446655440000"
+//  1. ID GENERATION WITH xid:
+//     xid generates globally unique IDs that are:
+//     - 20 chars, URL-safe (no special characters)
+//     - Sortable by creation time (they start with a timestamp)
+//     - Example: "cv37rs3pp9olc6atsptg"
+//     Compare to UUID (36 chars, with dashes): "550e8400-e29b-41d4-a716-446655440000"
 //
-// 2. POINTER RECEIVER (*model.Snippet):
-//    We take a pointer so we can MODIFY the original struct.
-//    After Create(), the caller's snippet has the generated ID and timestamps.
-//    If we took a value (model.Snippet), changes would be lost.
+//  2. POINTER RECEIVER (*model.Snippet):
+//     We take a pointer so we can MODIFY the original struct.
+//     After Create(), the caller's snippet has the generated ID and timestamps.
+//     If we took a value (model.Snippet), changes would be lost.
 //
 // 3. ExecContext vs QueryContext:
-//    - ExecContext: for INSERT, UPDATE, DELETE (no rows returned)
-//    - QueryContext: for SELECT (rows returned)
-//    Both accept context as the first arg for cancellation support.
+//   - ExecContext: for INSERT, UPDATE, DELETE (no rows returned)
+//   - QueryContext: for SELECT (rows returned)
+//     Both accept context as the first arg for cancellation support.
 //
-// 4. PARAMETERIZED QUERIES (the ? placeholders):
-//    NEVER build SQL strings with fmt.Sprintf or string concatenation!
-//    That creates SQL injection vulnerabilities:
-//      BAD:  "WHERE id = '" + userInput + "'"   ← attacker sends: ' OR 1=1 --
-//      GOOD: "WHERE id = ?", userInput           ← driver safely escapes the value
+//  4. PARAMETERIZED QUERIES (the ? placeholders):
+//     NEVER build SQL strings with fmt.Sprintf or string concatenation!
+//     That creates SQL injection vulnerabilities:
+//     BAD:  "WHERE id = '" + userInput + "'"   ← attacker sends: ' OR 1=1 --
+//     GOOD: "WHERE id = ?", userInput           ← driver safely escapes the value
 func (db *DB) Create(ctx context.Context, snippet *model.Snippet) error {
 	// Generate a unique ID for this snippet
 	snippet.ID = xid.New().String()
@@ -65,12 +65,13 @@ func (db *DB) Create(ctx context.Context, snippet *model.Snippet) error {
 	// The ? placeholders are filled in order by the arguments after the SQL string.
 	// The driver handles escaping to prevent SQL injection.
 	_, err := db.conn.ExecContext(ctx,
-		`INSERT INTO snippets (id, name, code, description, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO snippets (id, name, code, description, user_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		snippet.ID,
 		snippet.Name,
 		snippet.Code,
 		snippet.Description,
+		snippet.UserID, // nil for anonymous snippets
 		snippet.CreatedAt,
 		snippet.UpdatedAt,
 	)
@@ -91,28 +92,28 @@ func (db *DB) Create(ctx context.Context, snippet *model.Snippet) error {
 //
 // KEY CONCEPTS:
 //
-// 1. QueryRowContext:
-//    Use this when you expect EXACTLY ONE row (or zero rows).
-//    It returns a *sql.Row which you then .Scan() into Go variables.
-//    If the query returns no rows, Scan() returns sql.ErrNoRows.
+//  1. QueryRowContext:
+//     Use this when you expect EXACTLY ONE row (or zero rows).
+//     It returns a *sql.Row which you then .Scan() into Go variables.
+//     If the query returns no rows, Scan() returns sql.ErrNoRows.
 //
-// 2. .Scan() — THE BRIDGE BETWEEN SQL AND GO:
-//    Scan reads column values into Go variables. You MUST:
-//    - Pass pointers (&snippet.ID, not snippet.ID)
-//    - Match the ORDER of columns in your SELECT statement
-//    - Match the TYPES (TEXT→string, DATETIME→time.Time, INTEGER→int)
+//  2. .Scan() — THE BRIDGE BETWEEN SQL AND GO:
+//     Scan reads column values into Go variables. You MUST:
+//     - Pass pointers (&snippet.ID, not snippet.ID)
+//     - Match the ORDER of columns in your SELECT statement
+//     - Match the TYPES (TEXT→string, DATETIME→time.Time, INTEGER→int)
 //
-// 3. sql.ErrNoRows:
-//    This is NOT really an error — it just means "no matching row exists."
-//    We translate it to our app's NotFound error so the handler knows to return 404.
-//    This is a common pattern: translate database errors into domain errors.
+//  3. sql.ErrNoRows:
+//     This is NOT really an error — it just means "no matching row exists."
+//     We translate it to our app's NotFound error so the handler knows to return 404.
+//     This is a common pattern: translate database errors into domain errors.
 func (db *DB) GetByID(ctx context.Context, id string) (*model.Snippet, error) {
 	var snippet model.Snippet
 
 	// QueryRowContext runs a SELECT and returns at most one row.
 	// The Scan() call reads column values into our struct fields.
 	err := db.conn.QueryRowContext(ctx,
-		`SELECT id, name, code, description, created_at, updated_at
+		`SELECT id, name, code, description, user_id, created_at, updated_at
 		 FROM snippets
 		 WHERE id = ?`,
 		id,
@@ -121,6 +122,7 @@ func (db *DB) GetByID(ctx context.Context, id string) (*model.Snippet, error) {
 		&snippet.Name,
 		&snippet.Code,
 		&snippet.Description,
+		&snippet.UserID,
 		&snippet.CreatedAt,
 		&snippet.UpdatedAt,
 	)
@@ -143,28 +145,28 @@ func (db *DB) GetByID(ctx context.Context, id string) (*model.Snippet, error) {
 //
 // KEY CONCEPTS:
 //
-// 1. QueryContext (not QueryRowContext):
-//    Use this when you expect MULTIPLE rows.
-//    It returns *sql.Rows — an iterator you loop over with rows.Next().
+//  1. QueryContext (not QueryRowContext):
+//     Use this when you expect MULTIPLE rows.
+//     It returns *sql.Rows — an iterator you loop over with rows.Next().
 //
-// 2. defer rows.Close() — ABSOLUTELY CRITICAL:
-//    sql.Rows holds a database connection from the pool.
-//    If you forget to Close(), that connection is never returned to the pool.
-//    After enough leaked connections, your app runs out and hangs forever.
-//    The defer ensures Close() runs even if your loop panics.
+//  2. defer rows.Close() — ABSOLUTELY CRITICAL:
+//     sql.Rows holds a database connection from the pool.
+//     If you forget to Close(), that connection is never returned to the pool.
+//     After enough leaked connections, your app runs out and hangs forever.
+//     The defer ensures Close() runs even if your loop panics.
 //
-// 3. rows.Next() + rows.Scan() pattern:
-//    rows.Next() advances to the next row and returns false when done.
-//    rows.Scan() reads the current row's values into Go variables.
-//    Always check rows.Err() after the loop — it catches errors that
-//    happened DURING iteration (network issues, etc.).
+//  3. rows.Next() + rows.Scan() pattern:
+//     rows.Next() advances to the next row and returns false when done.
+//     rows.Scan() reads the current row's values into Go variables.
+//     Always check rows.Err() after the loop — it catches errors that
+//     happened DURING iteration (network issues, etc.).
 //
-// 4. LIMIT/OFFSET pagination:
-//    LIMIT N = return at most N rows
-//    OFFSET M = skip the first M rows
-//    Example: page 3 with 20 items per page → LIMIT 20 OFFSET 40
-//    NOTE: OFFSET pagination is simple but slow for large datasets.
-//    In Phase 6, you'll upgrade to cursor-based pagination.
+//  4. LIMIT/OFFSET pagination:
+//     LIMIT N = return at most N rows
+//     OFFSET M = skip the first M rows
+//     Example: page 3 with 20 items per page → LIMIT 20 OFFSET 40
+//     NOTE: OFFSET pagination is simple but slow for large datasets.
+//     In Phase 6, you'll upgrade to cursor-based pagination.
 func (db *DB) List(ctx context.Context, opts repository.ListOptions) ([]model.Snippet, error) {
 	// Apply defaults if not specified
 	limit := opts.Limit
@@ -182,7 +184,7 @@ func (db *DB) List(ctx context.Context, opts repository.ListOptions) ([]model.Sn
 
 	// ORDER BY created_at DESC = newest first
 	rows, err := db.conn.QueryContext(ctx,
-		`SELECT id, name, code, description, created_at, updated_at
+		`SELECT id, name, code, description, user_id, created_at, updated_at
 		 FROM snippets
 		 ORDER BY created_at DESC
 		 LIMIT ? OFFSET ?`,
@@ -208,7 +210,7 @@ func (db *DB) List(ctx context.Context, opts repository.ListOptions) ([]model.Sn
 		var s model.Snippet
 		if err := rows.Scan(
 			&s.ID, &s.Name, &s.Code, &s.Description,
-			&s.CreatedAt, &s.UpdatedAt,
+			&s.UserID, &s.CreatedAt, &s.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("sqlite: scanning snippet row: %w", err)
 		}
@@ -229,15 +231,15 @@ func (db *DB) List(ctx context.Context, opts repository.ListOptions) ([]model.Sn
 //
 // KEY CONCEPTS:
 //
-// 1. CHECKING IF THE ROW EXISTS:
-//    ExecContext returns a sql.Result with RowsAffected().
-//    If no rows were affected, the snippet doesn't exist → return NotFound.
-//    This is more efficient than doing a SELECT + UPDATE (one query vs two).
+//  1. CHECKING IF THE ROW EXISTS:
+//     ExecContext returns a sql.Result with RowsAffected().
+//     If no rows were affected, the snippet doesn't exist → return NotFound.
+//     This is more efficient than doing a SELECT + UPDATE (one query vs two).
 //
-// 2. UPDATING ONLY CHANGED FIELDS:
-//    We update name, code, description, and updated_at.
-//    We do NOT update id or created_at (those are immutable).
-//    updated_at is always set to "now" so we know when it was last modified.
+//  2. UPDATING ONLY CHANGED FIELDS:
+//     We update name, code, description, and updated_at.
+//     We do NOT update id or created_at (those are immutable).
+//     updated_at is always set to "now" so we know when it was last modified.
 func (db *DB) Update(ctx context.Context, snippet *model.Snippet) error {
 	// Set the updated timestamp
 	snippet.UpdatedAt = time.Now()

@@ -2,11 +2,12 @@ package repository
 
 import (
 	"context"
+
 	"github.com/sakif/coding-playground/internal/model"
 )
 
 type ListOptions struct {
-	Limit int
+	Limit  int
 	Offset int
 }
 
@@ -16,4 +17,9 @@ type SnippetRepository interface {
 	List(ctx context.Context, opts ListOptions) ([]model.Snippet, error)
 	Update(ctx context.Context, snippet *model.Snippet) error
 	Delete(ctx context.Context, id string) error
+}
+
+type UserRepository interface {
+	Upsert(ctx context.Context, user *model.User) error
+	GetUserByID(ctx context.Context, id string) (*model.User, error)
 }

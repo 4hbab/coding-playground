@@ -6,21 +6,6 @@
 // - Which URL patterns map to which handler functions
 // - What middleware runs on which routes
 // - How the server starts and stops gracefully
-//
-// WHY SEPARATE FROM main.go?
-// Keeping server setup in its own package makes it:
-// - Testable (we can create a test server without running main)
-// - Reusable (multiple entry points could use the same server config)
-// - Clean (main.go stays minimal — just "start the server")
-//
-// DEPENDENCY INJECTION FLOW (UPDATED):
-// main.go creates:
-//
-//	DB path (config) → passed to Server
-//	Server.New() creates: sqlite.DB → SnippetService → SnippetHandler
-//
-// This is the "composition root" pattern — all dependencies are wired
-// in one place (New/setupRoutes), rather than scattered across the codebase.
 package server
 
 import (
@@ -36,6 +21,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
+	"github.com/sakif/coding-playground/internal/auth"
 	"github.com/sakif/coding-playground/internal/executor"
 	"github.com/sakif/coding-playground/internal/handler"
 	"github.com/sakif/coding-playground/internal/middleware"
@@ -52,20 +38,21 @@ type Config struct {
 	Port        int
 	TemplateDir string
 	StaticDir   string
-	DBPath      string // NEW: path to the SQLite database file
+	DBPath      string
+
+	// Auth configuration (Phase 3)
+	JWTSecret          string // required — signs JWT access tokens
+	GitHubClientID     string // required for OAuth (empty = OAuth disabled)
+	GitHubClientSecret string
+	GitHubCallbackURL  string
 }
 
 // Server represents the HTTP server and all its dependencies.
-//
-// RESOURCE MANAGEMENT:
-// The Server now owns a database connection (db). When the server shuts down,
-// we must close this connection to flush any pending writes and release the file lock.
-// This is handled in Start() during graceful shutdown.
 type Server struct {
 	router *chi.Mux
 	config Config
 	logger *slog.Logger
-	db     *sqliteRepo.DB // NEW: database connection (owned by server, closed on shutdown)
+	db     *sqliteRepo.DB
 	exec   executor.Executor
 }
 
@@ -73,21 +60,11 @@ type Server struct {
 //
 // DEPENDENCY INJECTION & WIRING:
 // This is where the entire dependency chain is assembled:
-//  1. Create the database connection (sqlite.New)
-//  2. Create the service layer (service.NewSnippetService) with the DB
-//  3. Create the handler (handler.NewSnippetHandler) with the service
+//  1. Create the DB connection (sqlite.New)
+//  2. Create the service layer with the DB
+//  3. Create handlers with the services
 //  4. Wire handlers to routes
-//
-// Each layer only receives what it needs:
-// - Service gets the repository interface (not the concrete sqlite.DB)
-// - Handler gets the service (not the repository or DB)
-//
-// IMPORT ALIAS:
-// We import repository/sqlite as `sqliteRepo` to avoid confusion with
-// the sqlite driver package. Import aliases are common in Go when
-// package names would otherwise collide or be unclear.
 func New(cfg Config, logger *slog.Logger, exec executor.Executor) (*Server, error) {
-	// === CREATE DATABASE ===
 	db, err := sqliteRepo.New(cfg.DBPath)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
@@ -101,9 +78,8 @@ func New(cfg Config, logger *slog.Logger, exec executor.Executor) (*Server, erro
 		exec:   exec,
 	}
 
-	// Set up middleware and routes
 	if err := s.setupRoutes(); err != nil {
-		db.Close() // Clean up DB if route setup fails
+		db.Close()
 		return nil, fmt.Errorf("setting up routes: %w", err)
 	}
 
@@ -112,88 +88,117 @@ func New(cfg Config, logger *slog.Logger, exec executor.Executor) (*Server, erro
 
 // setupRoutes configures all middleware and route handlers.
 //
-// ROUTE STRUCTURE (UPDATED):
-// GET    /                      → Playground page (HTML)
-// GET    /static/*              → Static files (CSS, JS, images)
-// GET    /api/snippets          → List snippets (JSON)
-// GET    /api/snippets/{id}     → Get single snippet (JSON)  [NEW]
-// POST   /api/snippets          → Create snippet (JSON)
-// PUT    /api/snippets/{id}     → Update snippet (JSON)      [NEW]
-// DELETE /api/snippets/{id}     → Delete snippet
+// ROUTE STRUCTURE (Phase 3):
 //
-// MIDDLEWARE ORDER MATTERS:
-// Middleware executes in the order it's added. Our order:
-// 1. RequestID — assigns unique ID to each request (for tracing)
-// 2. RealIP — extracts real client IP from proxy headers
-// 3. Logger — logs each request with timing info
-// 4. Recoverer — catches panics and returns 500 instead of crashing
+//	GET    /                          → Playground (HTML)
+//	GET    /static/*                  → Static files
+//	GET    /auth/github/login         → Redirect to GitHub OAuth
+//	GET    /auth/github/callback      → OAuth callback, sets JWT cookie
+//	POST   /auth/logout               → Clears JWT cookie
+//	GET    /api/me                    → Current user profile (requires auth)
+//	GET    /api/snippets              → List snippets (public)
+//	GET    /api/snippets/{id}         → Get snippet (public)
+//	POST   /api/snippets              → Create snippet (optional auth — sets owner)
+//	PUT    /api/snippets/{id}         → Update snippet (optional auth — ownership check)
+//	DELETE /api/snippets/{id}         → Delete snippet (optional auth — ownership check)
+//	POST   /api/execute               → Execute code
 func (s *Server) setupRoutes() error {
 	// === Global Middleware ===
-	// These run on EVERY request, in order
-
-	// Chi's built-in middleware
-	s.router.Use(chimiddleware.RequestID) // Adds X-Request-ID header
-	s.router.Use(chimiddleware.RealIP)    // Extracts real IP from X-Forwarded-For
-	s.router.Use(chimiddleware.Recoverer) // Recovers from panics, returns 500
-
-	// Our custom logging middleware
+	s.router.Use(chimiddleware.RequestID)
+	s.router.Use(chimiddleware.RealIP)
+	s.router.Use(chimiddleware.Recoverer)
 	s.router.Use(middleware.Logger(s.logger))
 
 	// === Static Files ===
-	// http.FileServer serves files from the filesystem.
-	// http.StripPrefix removes "/static/" from the URL path before looking up the file.
-	// So GET /static/css/style.css → serves {StaticDir}/css/style.css
 	fileServer := http.FileServer(http.Dir(s.config.StaticDir))
 	s.router.Handle("/static/*", http.StripPrefix("/static/", fileServer))
 
-	// === Page Routes ===
+	// === Playground Page ===
 	playgroundHandler, err := handler.NewPlaygroundHandler(s.config.TemplateDir, s.logger)
 	if err != nil {
 		return fmt.Errorf("creating playground handler: %w", err)
 	}
 	s.router.Get("/", playgroundHandler.HandlePlayground)
 
-	// === API Routes (UPDATED) ===
-	// DEPENDENCY CHAIN:
-	//   s.db (sqlite.DB) → implements repository.SnippetRepository
-	//   SnippetService receives the repository interface
-	//   SnippetHandler receives the service
-	//
-	// Notice: the handler never touches the database directly.
-	// The service never touches HTTP. Clean separation!
+	// === Auth Setup ===
+	// Build TokenService — required for both issuing and validating JWTs.
+	// If no JWT secret is configured, skip OAuth wiring but still allow the
+	// server to start (tokens just won't be issuable, and optional auth is a no-op).
+	var tokenService *auth.TokenService
+	if s.config.JWTSecret != "" {
+		tokenService, err = auth.NewTokenService(s.config.JWTSecret)
+		if err != nil {
+			return fmt.Errorf("creating token service: %w", err)
+		}
+	}
+
+	// === Auth Routes (GitHub OAuth) ===
+	// Only register if GitHub credentials are provided.
+	if s.config.GitHubClientID != "" && tokenService != nil {
+		githubProvider := auth.NewGitHubProvider(
+			s.config.GitHubClientID,
+			s.config.GitHubClientSecret,
+			s.config.GitHubCallbackURL,
+		)
+
+		authHandler := handler.NewAuthHandler(
+			githubProvider,
+			tokenService,
+			s.db, // *sqliteRepo.DB implements repository.UserRepository
+			s.logger,
+		)
+
+		s.router.Get("/auth/github/login", authHandler.HandleGitHubLogin)
+		s.router.Get("/auth/github/callback", authHandler.HandleGitHubCallback)
+		s.router.Post("/auth/logout", authHandler.HandleLogout)
+
+		// GET /api/me — only for authenticated users
+		s.router.Group(func(r chi.Router) {
+			r.Use(auth.RequireAuth(tokenService))
+			r.Get("/api/me", authHandler.HandleMe)
+		})
+
+		s.logger.Info("GitHub OAuth enabled",
+			slog.String("callbackURL", s.config.GitHubCallbackURL),
+		)
+	} else {
+		s.logger.Warn("GitHub OAuth disabled — set GITHUB_CLIENT_ID and JWT_SECRET to enable")
+	}
+
+	// === Snippet API ===
 	snippetService := service.NewSnippetService(s.db, s.logger)
 	snippetHandler := handler.NewSnippetHandler(snippetService, s.logger)
-	executeHandler := handler.NewExecuteHandler(s.exec, s.logger)
 
 	s.router.Route("/api", func(r chi.Router) {
+		// Public read routes — no auth required
 		r.Get("/snippets", snippetHandler.HandleList)
-		r.Get("/snippets/{id}", snippetHandler.HandleGetByID) // NEW
-		r.Post("/snippets", snippetHandler.HandleCreate)
-		r.Put("/snippets/{id}", snippetHandler.HandleUpdate) // NEW
-		r.Delete("/snippets/{id}", snippetHandler.HandleDelete)
+		r.Get("/snippets/{id}", snippetHandler.HandleGetByID)
 
-		r.Post("/execute", executeHandler.HandleExecute)
+		// Mutating routes — OptionalAuth so userID is injected when present.
+		// The service layer enforces ownership rules using that userID.
+		r.Group(func(r chi.Router) {
+			if tokenService != nil {
+				r.Use(auth.OptionalAuth(tokenService))
+			}
+			r.Post("/snippets", snippetHandler.HandleCreate)
+			r.Put("/snippets/{id}", snippetHandler.HandleUpdate)
+			r.Delete("/snippets/{id}", snippetHandler.HandleDelete)
+		})
+
+		// /api/execute only available when Docker executor is running
+		if s.exec != nil {
+			executeHandler := handler.NewExecuteHandler(s.exec, s.logger)
+			r.Post("/execute", executeHandler.HandleExecute)
+		}
 	})
 
 	return nil
 }
 
 // Start starts the HTTP server and handles graceful shutdown.
-//
-// GRACEFUL SHUTDOWN (UPDATED):
-// Now that we have a database connection, shutdown is more important:
-// 1. Stop accepting new HTTP connections
-// 2. Wait for in-flight requests to finish (30s timeout)
-// 3. Close the database connection (flushes WAL, releases file lock)
-//
-// If we skip step 3, the database file might be left in an inconsistent state.
-// The `defer s.db.Close()` ensures this happens even if something panics.
 func (s *Server) Start() error {
-	// Ensure the database is closed when the server stops.
-	// This runs AFTER everything else in this function finishes.
 	defer s.db.Close()
 
-	// Create the HTTP server with sensible timeouts
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", s.config.Port),
 		Handler:      s.router,
@@ -202,14 +207,11 @@ func (s *Server) Start() error {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Channel to receive OS signals
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
-	// Channel to receive server errors
 	serverErrors := make(chan error, 1)
 
-	// Start the server in a goroutine (so it doesn't block)
 	go func() {
 		s.logger.Info("server starting",
 			slog.Int("port", s.config.Port),
@@ -219,19 +221,15 @@ func (s *Server) Start() error {
 		serverErrors <- srv.ListenAndServe()
 	}()
 
-	// Block until we receive a signal or server error
 	select {
 	case err := <-serverErrors:
-		// Server failed to start
 		if err != http.ErrServerClosed {
 			return fmt.Errorf("server error: %w", err)
 		}
 
 	case sig := <-quit:
-		// Received shutdown signal
 		s.logger.Info("shutdown signal received", slog.String("signal", sig.String()))
 
-		// Give in-flight requests 30 seconds to complete
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 

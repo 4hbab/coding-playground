@@ -15,13 +15,13 @@
 // We use dedicated request structs (CreateSnippetRequest, UpdateSnippetRequest)
 // instead of decoding directly into model.Snippet. Why?
 //
-// 1. DECOUPLING: The API request shape can differ from the database model.
-//    Example: the request has {name, code} but the model also has {id, createdAt, updatedAt}.
-//    Clients shouldn't send (or even know about) auto-generated fields.
+//  1. DECOUPLING: The API request shape can differ from the database model.
+//     Example: the request has {name, code} but the model also has {id, createdAt, updatedAt}.
+//     Clients shouldn't send (or even know about) auto-generated fields.
 //
-// 2. SECURITY: If we decode into model.Snippet, a malicious client could send
-//    {"id": "someone-elses-id"} and overwrite data they don't own.
-//    With a request struct, we control exactly which fields the client can set.
+//  2. SECURITY: If we decode into model.Snippet, a malicious client could send
+//     {"id": "someone-elses-id"} and overwrite data they don't own.
+//     With a request struct, we control exactly which fields the client can set.
 //
 // 3. EVOLUTION: We can change the API format without changing the model (or vice versa).
 package handler
@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/sakif/coding-playground/internal/auth"
 	"github.com/sakif/coding-playground/internal/service"
 )
 
@@ -47,7 +48,8 @@ type SnippetHandler struct {
 // DEPENDENCY INJECTION:
 // The handler receives the service as a parameter (not creating it internally).
 // The full dependency chain is wired in main.go / server.go:
-//   DB → Repository → Service → Handler
+//
+//	DB → Repository → Service → Handler
 //
 // Each layer only knows about the one directly below it.
 func NewSnippetHandler(svc *service.SnippetService, logger *slog.Logger) *SnippetHandler {
@@ -154,8 +156,12 @@ func (h *SnippetHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Extract the authenticated user's ID from context (set by OptionalAuth middleware).
+	// userID is "" for anonymous requests — the service treats that as unowned.
+	userID, _ := auth.UserIDFromContext(r.Context())
+
 	// Delegate to service (handles validation, ID generation, persistence)
-	snippet, err := h.service.Create(r.Context(), req.Name, req.Code, req.Description)
+	snippet, err := h.service.Create(r.Context(), req.Name, req.Code, req.Description, userID)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -191,7 +197,9 @@ func (h *SnippetHandler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	snippet, err := h.service.Update(r.Context(), id, req.Name, req.Code, req.Description)
+	userID, _ := auth.UserIDFromContext(r.Context())
+
+	snippet, err := h.service.Update(r.Context(), id, req.Name, req.Code, req.Description, userID)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -211,7 +219,9 @@ func (h *SnippetHandler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 func (h *SnippetHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	if err := h.service.Delete(r.Context(), id); err != nil {
+	userID, _ := auth.UserIDFromContext(r.Context())
+
+	if err := h.service.Delete(r.Context(), id, userID); err != nil {
 		writeError(w, err)
 		return
 	}

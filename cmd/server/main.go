@@ -17,6 +17,7 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -87,21 +88,43 @@ func main() {
 	}
 
 	// === 5. INITIALIZE EXECUTOR ===
+	// Docker executor is optional — the server starts without it but /api/execute will be unavailable.
 	exec, err := docker.New(docker.DefaultConfig(), logger)
 	if err != nil {
-		logger.Error("failed to create docker executor", slog.String("error", err.Error()))
-		os.Exit(1)
+		logger.Warn("Docker executor unavailable — /api/execute will return errors",
+			slog.String("error", err.Error()),
+		)
+		exec = nil
+	} else {
+		defer exec.Close()
 	}
-	defer exec.Close()
 
-	// === 6. CREATE AND START THE SERVER ===
-	// We create the server config, build the server, and start it.
-	// If anything fails, we log the error and exit with code 1 (non-zero = error).
+	// === 6. AUTH CONFIGURATION ===
+	// JWT_SECRET must be a long random string. Use:
+	//   JWT_SECRET=$(openssl rand -hex 32)
+	// If unset, auth is disabled (server still starts, OAuth routes not registered).
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		logger.Warn("JWT_SECRET not set — authentication is disabled")
+	}
+
+	githubClientID := os.Getenv("GITHUB_CLIENT_ID")
+	githubClientSecret := os.Getenv("GITHUB_CLIENT_SECRET")
+	githubCallbackURL := os.Getenv("GITHUB_CALLBACK_URL")
+	if githubCallbackURL == "" {
+		githubCallbackURL = fmt.Sprintf("http://localhost:%d/auth/github/callback", port)
+	}
+
+	// === 7. CREATE AND START THE SERVER ===
 	cfg := server.Config{
-		Port:        port,
-		TemplateDir: templateDir,
-		StaticDir:   staticDir,
-		DBPath:      dbPath,
+		Port:               port,
+		TemplateDir:        templateDir,
+		StaticDir:          staticDir,
+		DBPath:             dbPath,
+		JWTSecret:          jwtSecret,
+		GitHubClientID:     githubClientID,
+		GitHubClientSecret: githubClientSecret,
+		GitHubCallbackURL:  githubCallbackURL,
 	}
 
 	srv, err := server.New(cfg, logger, exec)

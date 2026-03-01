@@ -44,9 +44,9 @@ type ErrorResponse struct {
 // Any header changes after that are silently ignored.
 //
 // That's why we do:
-//   1. w.Header().Set(...)     ← set headers
-//   2. w.WriteHeader(status)   ← send status + headers
-//   3. json.Encode(data)       ← send body
+//  1. w.Header().Set(...)     ← set headers
+//  2. w.WriteHeader(status)   ← send status + headers
+//  3. json.Encode(data)       ← send body
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -76,9 +76,10 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 // errors.Is() UNWRAPPING:
 // errors.Is(err, target) walks the entire error chain (via Unwrap())
 // to see if `target` appears anywhere. This works because:
-//   service returns: fmt.Errorf("creating snippet: %w", apperror.ValidationFailed(...))
-//   which wraps:     AppError{Err: ErrValidation, Message: "..."}
-//   errors.Is walks: outer error → AppError → ErrValidation ✓ match!
+//
+//	service returns: fmt.Errorf("creating snippet: %w", apperror.ValidationFailed(...))
+//	which wraps:     AppError{Err: ErrValidation, Message: "..."}
+//	errors.Is walks: outer error → AppError → ErrValidation ✓ match!
 func writeError(w http.ResponseWriter, err error) {
 	// Try to extract our AppError for the human-readable message
 	var appErr *apperror.AppError
@@ -97,6 +98,9 @@ func writeError(w http.ResponseWriter, err error) {
 		case errors.Is(err, apperror.ErrNotFound):
 			status = http.StatusNotFound // 404
 			errorType = "not_found"
+		case errors.Is(err, apperror.ErrForbidden):
+			status = http.StatusForbidden // 403
+			errorType = "forbidden"
 		case errors.Is(err, apperror.ErrConflict):
 			status = http.StatusConflict // 409
 			errorType = "conflict"

@@ -101,7 +101,6 @@ func (m *mockSnippetRepo) Delete(_ context.Context, id string) error {
 	return nil
 }
 
-
 // =========================================================================
 // TEST HELPER
 // =========================================================================
@@ -123,7 +122,7 @@ func newTestService(t *testing.T) (*SnippetService, *mockSnippetRepo) {
 func TestCreate_Success(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	snippet, err := svc.Create(context.Background(), "hello world", "print('hi')", "a test")
+	snippet, err := svc.Create(context.Background(), "hello world", "print('hi')", "a test", "")
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -142,7 +141,7 @@ func TestCreate_Success(t *testing.T) {
 func TestCreate_TrimsWhitespace(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	snippet, err := svc.Create(context.Background(), "  spaced out  ", "code", "  desc  ")
+	snippet, err := svc.Create(context.Background(), "  spaced out  ", "code", "  desc  ", "")
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -158,7 +157,7 @@ func TestCreate_TrimsWhitespace(t *testing.T) {
 func TestCreate_EmptyName(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	_, err := svc.Create(context.Background(), "", "code", "")
+	_, err := svc.Create(context.Background(), "", "code", "", "")
 	if err == nil {
 		t.Fatal("Create() should error on empty name")
 	}
@@ -170,7 +169,7 @@ func TestCreate_EmptyName(t *testing.T) {
 func TestCreate_WhitespaceOnlyName(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	_, err := svc.Create(context.Background(), "   ", "code", "")
+	_, err := svc.Create(context.Background(), "   ", "code", "", "")
 	if err == nil {
 		t.Fatal("Create() should error on whitespace-only name")
 	}
@@ -188,7 +187,7 @@ func TestCreate_NameTooLong(t *testing.T) {
 		longName += "a"
 	}
 
-	_, err := svc.Create(context.Background(), longName, "code", "")
+	_, err := svc.Create(context.Background(), longName, "code", "", "")
 	if err == nil {
 		t.Fatal("Create() should error on name that's too long")
 	}
@@ -205,7 +204,7 @@ func TestGetByID_Success(t *testing.T) {
 	svc, _ := newTestService(t)
 
 	// Create a snippet first
-	created, err := svc.Create(context.Background(), "test", "code", "")
+	created, err := svc.Create(context.Background(), "test", "code", "", "")
 	if err != nil {
 		t.Fatalf("setup: Create() error = %v", err)
 	}
@@ -277,9 +276,9 @@ func TestList_ClampsBadValues(t *testing.T) {
 func TestUpdate_Success(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	created, _ := svc.Create(context.Background(), "original", "old code", "old desc")
+	created, _ := svc.Create(context.Background(), "original", "old code", "old desc", "")
 
-	updated, err := svc.Update(context.Background(), created.ID, "new name", "new code", "new desc")
+	updated, err := svc.Update(context.Background(), created.ID, "new name", "new code", "new desc", "")
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
@@ -295,12 +294,43 @@ func TestUpdate_Success(t *testing.T) {
 func TestUpdate_NotFound(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	_, err := svc.Update(context.Background(), "nonexistent", "name", "code", "")
+	_, err := svc.Update(context.Background(), "nonexistent", "name", "code", "", "")
 	if err == nil {
 		t.Fatal("Update() should error on nonexistent ID")
 	}
 	if !errors.Is(err, apperror.ErrNotFound) {
 		t.Errorf("error = %v, want ErrNotFound", err)
+	}
+}
+
+// TestUpdate_WrongOwner ensures a caller who doesn't own the snippet gets ErrForbidden.
+func TestUpdate_WrongOwner(t *testing.T) {
+	svc, _ := newTestService(t)
+
+	// Create owned by "user-a"
+	owner := "user-a"
+	created, _ := svc.Create(context.Background(), "owned", "code", "", owner)
+
+	// Attempt update by "user-b"
+	_, err := svc.Update(context.Background(), created.ID, "hack", "evil", "", "user-b")
+	if err == nil {
+		t.Fatal("Update() should return ErrForbidden for wrong owner")
+	}
+	if !errors.Is(err, apperror.ErrForbidden) {
+		t.Errorf("error = %v, want ErrForbidden", err)
+	}
+}
+
+// TestUpdate_OwnerCanUpdate ensures the owner can update their own snippet.
+func TestUpdate_OwnerCanUpdate(t *testing.T) {
+	svc, _ := newTestService(t)
+
+	owner := "user-a"
+	created, _ := svc.Create(context.Background(), "mine", "code", "", owner)
+
+	_, err := svc.Update(context.Background(), created.ID, "updated", "new", "", owner)
+	if err != nil {
+		t.Fatalf("Owner should be able to update their own snippet: %v", err)
 	}
 }
 
@@ -311,8 +341,8 @@ func TestUpdate_NotFound(t *testing.T) {
 func TestDelete_Success(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	created, _ := svc.Create(context.Background(), "to delete", "code", "")
-	err := svc.Delete(context.Background(), created.ID)
+	created, _ := svc.Create(context.Background(), "to delete", "code", "", "")
+	err := svc.Delete(context.Background(), created.ID, "")
 	if err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
@@ -327,11 +357,27 @@ func TestDelete_Success(t *testing.T) {
 func TestDelete_EmptyID(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	err := svc.Delete(context.Background(), "")
+	err := svc.Delete(context.Background(), "", "")
 	if err == nil {
 		t.Fatal("Delete() should error on empty ID")
 	}
 	if !errors.Is(err, apperror.ErrValidation) {
 		t.Errorf("error = %v, want ErrValidation", err)
+	}
+}
+
+// TestDelete_WrongOwner ensures a caller who doesn't own the snippet gets ErrForbidden.
+func TestDelete_WrongOwner(t *testing.T) {
+	svc, _ := newTestService(t)
+
+	owner := "user-a"
+	created, _ := svc.Create(context.Background(), "owned", "code", "", owner)
+
+	err := svc.Delete(context.Background(), created.ID, "user-b")
+	if err == nil {
+		t.Fatal("Delete() should return ErrForbidden for wrong owner")
+	}
+	if !errors.Is(err, apperror.ErrForbidden) {
+		t.Errorf("error = %v, want ErrForbidden", err)
 	}
 }
