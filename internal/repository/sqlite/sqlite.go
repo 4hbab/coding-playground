@@ -22,9 +22,9 @@
 //   - sql.Rows    — multiple result rows (must be closed!)
 //
 // The pattern is always:
-//   1. sql.Open(driverName, dataSourceName) → creates a pool
-//   2. db.QueryContext / db.ExecContext     → runs queries
-//   3. rows.Scan(&field1, &field2)          → reads results into Go variables
+//  1. sql.Open(driverName, dataSourceName) → creates a pool
+//  2. db.QueryContext / db.ExecContext     → runs queries
+//  3. rows.Scan(&field1, &field2)          → reads results into Go variables
 package sqlite
 
 import (
@@ -149,13 +149,40 @@ func (db *DB) migrate() error {
 			name        TEXT NOT NULL,
 			code        TEXT NOT NULL DEFAULT '',
 			description TEXT NOT NULL DEFAULT '',
+			user_id     TEXT,
 			created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
 		CREATE INDEX IF NOT EXISTS idx_snippets_created_at ON snippets(created_at);
+
+		CREATE TABLE IF NOT EXISTS users (
+			id         TEXT PRIMARY KEY,
+			github_id  INTEGER NOT NULL UNIQUE,
+			login      TEXT NOT NULL,
+			email      TEXT NOT NULL DEFAULT '',
+			avatar_url TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_users_github_id ON users(github_id);
 	`)
 	if err != nil {
-		return fmt.Errorf("creating snippets table: %w", err)
+		return fmt.Errorf("creating tables: %w", err)
+	}
+
+	// Add user_id column to existing snippets table if it doesn't exist yet.
+	// SQLite doesn't have IF NOT EXISTS for ALTER TABLE, so we check first.
+	var colCount int
+	row := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('snippets') WHERE name = 'user_id'`,
+	)
+	if err := row.Scan(&colCount); err != nil {
+		return fmt.Errorf("checking user_id column: %w", err)
+	}
+	if colCount == 0 {
+		if _, err := db.conn.Exec(`ALTER TABLE snippets ADD COLUMN user_id TEXT`); err != nil {
+			return fmt.Errorf("adding user_id column: %w", err)
+		}
 	}
 
 	return nil
