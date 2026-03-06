@@ -93,6 +93,9 @@ document.addEventListener('DOMContentLoaded', async function () {
 
     // 7. Restore theme preference
     restoreTheme();
+
+    // 8. Check authentication status (renders login button or avatar)
+    await checkAuthStatus();
 });
 
 // ===================================================================
@@ -359,7 +362,18 @@ async function refreshSnippetList() {
     });
 }
 
-function openSaveModal() {
+// openSaveModal shows the save dialog — but if the user isn't logged in
+// and auth is available, we first prompt them to sign in.
+// If they choose "Save without account", we proceed to the normal save modal.
+async function openSaveModal() {
+    // If auth is available and user is NOT logged in, show sign-in prompt first
+    if (authAvailable && !isLoggedIn()) {
+        const choice = await showSignInPrompt();
+        if (choice === 'cancel') return;
+        // choice === 'anonymous' → fall through to normal save
+        // choice === 'signin' → page already redirected to GitHub OAuth
+    }
+
     elements.saveModal.style.display = 'flex';
     elements.snippetName.value = '';
     elements.snippetName.focus();
