@@ -198,6 +198,8 @@ body {
 }
 
 .editor-panel {
+    /* Lets the editor header adapt to the panel's width (see @container editor below) */
+    container: editor / inline-size;
     flex: 1;
     min-width: 300px;
 }
@@ -211,8 +213,12 @@ body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    height: 44px;
-    padding: 0 8px 0 12px;
+    /* When a panel is too narrow for its buttons, they wrap onto a second row
+       instead of spilling under the neighbouring panel. */
+    flex-wrap: wrap;
+    row-gap: 6px;
+    min-height: 44px;
+    padding: 6px 8px 6px 12px;
     background: var(--bg-tertiary);
     border-bottom: 1px solid var(--border-primary);
     flex-shrink: 0;
@@ -242,9 +248,11 @@ body {
     display: flex;
     flex-direction: row;
     align-items: center;
+    justify-content: flex-end;
     gap: 6px;
-    flex-shrink: 0;
-    flex-wrap: nowrap;
+    flex: 1 1 auto;
+    min-width: 0;
+    flex-wrap: wrap;
     white-space: nowrap;
 }
 
@@ -355,6 +363,24 @@ body {
 
 .run-btn.running {
     background: linear-gradient(135deg, #9a6700, #d29922);
+}
+
+.run-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Narrow editor panel: drop the labels so the controls fit on fewer rows */
+@container editor (max-width: 600px) {
+    .editor-panel .panel-title,
+    .save-btn .btn-label {
+        display: none;
+    }
+
+    .snippet-select {
+        max-width: 110px;
+    }
 }
 
 /* === Run Target Toggle (Browser / Server) === */

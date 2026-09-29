@@ -24,7 +24,7 @@
                             <polyline points="17 21 17 13 7 13 7 21"></polyline>
                             <polyline points="7 3 7 8 15 8"></polyline>
                         </svg>
-                        Save
+                        <span class="btn-label">Save</span>
                     </button>
                     <button id="delete-btn" class="action-btn delete-btn" title="Delete Snippet">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -35,26 +35,29 @@
                         </svg>
                     </button>
                 </div>
-                <!-- Run Target: where the code runs (shown only when the server supports it) -->
-                <div id="run-target" class="run-target" role="radiogroup" aria-label="Where to run code" hidden>
-                    <button type="button" class="run-target-btn active" data-target="browser" role="radio"
-                        aria-checked="true"
-                        title="Runs in your browser with Pyodide (WebAssembly). Your code never leaves your computer.">
-                        Browser
-                    </button>
-                    <button type="button" class="run-target-btn" data-target="server" role="radio"
-                        aria-checked="false"
-                        title="Runs on the server in an isolated Docker container with standard CPython and strict time, memory and network limits.">
-                        Server
+                <!-- Run Controls: kept together so they wrap as one unit on narrow screens -->
+                <div class="run-controls">
+                    <!-- Run Target: where the code runs (shown only when the server supports it) -->
+                    <div id="run-target" class="run-target" role="radiogroup" aria-label="Where to run code" hidden>
+                        <button type="button" class="run-target-btn active" data-target="browser" role="radio"
+                            aria-checked="true"
+                            title="Runs in your browser with Pyodide (WebAssembly). Your code never leaves your computer.">
+                            Browser
+                        </button>
+                        <button type="button" class="run-target-btn" data-target="server" role="radio"
+                            aria-checked="false"
+                            title="Runs on the server in an isolated Docker container with standard CPython and strict time, memory and network limits.">
+                            Server
+                        </button>
+                    </div>
+                    <!-- Run Button -->
+                    <button id="run-btn" class="run-btn" title="Run Code (Ctrl+Enter)">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                            <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                        </svg>
+                        <span>Run</span>
                     </button>
                 </div>
-                <!-- Run Button -->
-                <button id="run-btn" class="run-btn" title="Run Code (Ctrl+Enter)">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                        <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                    </svg>
-                    <span>Run</span>
-                </button>
             </div>
         </div>
         <div id="editor-container" class="editor-container">
