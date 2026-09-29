@@ -357,6 +357,42 @@ body {
     background: linear-gradient(135deg, #9a6700, #d29922);
 }
 
+/* === Run Target Toggle (Browser / Server) === */
+.run-target {
+    display: flex;
+    padding: 2px;
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+}
+
+.run-target[hidden] {
+    display: none;
+}
+
+.run-target-btn {
+    padding: 3px 10px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition);
+}
+
+.run-target-btn:hover {
+    color: var(--text-primary);
+}
+
+.run-target-btn.active {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-sm);
+}
+
 .action-btn {
     display: flex;
     align-items: center;

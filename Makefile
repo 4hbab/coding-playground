@@ -12,6 +12,10 @@ GOLANGCI_LINT_VERSION := v2.13.2
 # Windows binaries need the .exe extension
 EXE := $(if $(filter Windows_NT,$(OS)),.exe,)
 
+# Docker Desktop on macOS doesn't create /var/run/docker.sock, so point the Docker
+# client at the active Docker context's socket. Keeps an existing DOCKER_HOST.
+export DOCKER_HOST ?= $(shell docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)
+
 # Run the server in development mode
 run:
 	go run ./cmd/server/main.go

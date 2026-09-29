@@ -6,7 +6,8 @@
 //
 // ARCHITECTURE:
 // - editor.js    → Monaco Editor (code input)
-// - pyodide-worker.js → Web Worker (Python execution)
+// - pyodide-worker.js → Web Worker (Python execution in the browser)
+// - server-runner.js → Server API (Python execution in a Docker sandbox)
 // - snippets.js  → Server API (save/load snippets via fetch)
 // - app.js       → THIS FILE (glue + UI logic)
 //
@@ -28,6 +29,7 @@ let worker = null;          // Pyodide Web Worker instance
 let isRunning = false;      // Whether code is currently executing
 let isPyodideReady = false; // Whether Pyodide has finished loading
 let executionTimer = null;  // Timeout timer for long-running code
+let runTarget = 'browser';  // Where code runs: 'browser' (Pyodide) or 'server' (Docker)
 
 // === DOM REFERENCES ===
 // We cache DOM element references for performance (avoiding repeated lookups)
@@ -57,6 +59,8 @@ function cacheElements() {
     elements.saveCancel = document.getElementById('save-cancel');
     elements.snippetName = document.getElementById('snippet-name');
     elements.wasmError = document.getElementById('wasm-error');
+    elements.runTarget = document.getElementById('run-target');
+    elements.runTargetBtns = document.querySelectorAll('.run-target-btn');
 }
 
 // ===================================================================
@@ -88,13 +92,16 @@ document.addEventListener('DOMContentLoaded', async function () {
     // 5. Set up event listeners
     setupEventListeners();
 
-    // 6. Load saved snippets into the dropdown (async — fetches from server)
+    // 6. Offer server-side execution if the server supports it
+    await initRunTarget();
+
+    // 7. Load saved snippets into the dropdown (async — fetches from server)
     await refreshSnippetList();
 
-    // 7. Restore theme preference
+    // 8. Restore theme preference
     restoreTheme();
 
-    // 8. Check authentication status (renders login button or avatar)
+    // 9. Check authentication status (renders login button or avatar)
     await checkAuthStatus();
 });
 
@@ -136,12 +143,15 @@ function initWorker() {
         switch (type) {
             case 'ready':
                 isPyodideReady = true;
-                setStatus('ready', 'Ready');
-                showOutput('✅ Python runtime loaded successfully!\n\n', 'success');
+                // Pyodide loads in the background; don't overwrite a server run's output
+                if (runTarget === 'browser' && !isRunning) {
+                    setStatus('ready', 'Ready');
+                    showOutput('✅ Python runtime loaded successfully!\n\n', 'success');
+                }
                 break;
 
             case 'status':
-                setStatus('loading', message);
+                if (runTarget === 'browser' && !isRunning) setStatus('loading', message);
                 break;
 
             case 'started':
@@ -195,14 +205,20 @@ let executionStartTime = 0;
  */
 function runCode() {
     if (isRunning) return;
-    if (!isPyodideReady) {
-        showToast('Python is still loading. Please wait...', 'error');
-        return;
-    }
 
     const code = getEditorCode();
     if (!code.trim()) {
         showToast('No code to run!', 'error');
+        return;
+    }
+
+    if (runTarget === 'server') {
+        runOnServer(code);
+        return;
+    }
+
+    if (!isPyodideReady) {
+        showToast('Python is still loading. Please wait...', 'error');
         return;
     }
 
@@ -216,6 +232,37 @@ function runCode() {
 
     // Send code to the worker
     worker.postMessage({ type: 'run', code: code });
+}
+
+/**
+ * Run code on the server's Docker sandbox and show the result.
+ * The server enforces its own time limit, so no client-side timer is needed.
+ */
+async function runOnServer(code) {
+    isRunning = true;
+    executionStartTime = performance.now();
+    updateRunButton(true);
+    setStatus('loading', 'Running on server...');
+    showLoadingOverlay(true);
+    clearOutput();
+
+    const response = await executeOnServer(code);
+
+    if (!response.ok) {
+        appendOutput('❌ ' + response.error + '\n', 'error');
+    } else {
+        const { stdout, stderr, exitCode, truncated } = response.result;
+        if (stdout) appendOutput(stdout, 'stdout');
+        if (stderr) appendOutput(stderr, 'stderr');
+        if (truncated) {
+            appendOutput('\n✂️ Output was cut off because it went over the server\'s size limit.\n', 'error');
+        }
+        if (exitCode !== 0 && !stderr) {
+            appendOutput(`\nProcess exited with code ${exitCode}.\n`, 'error');
+        }
+    }
+
+    finishExecution();
 }
 
 /**
@@ -461,6 +508,58 @@ function toggleTheme() {
 
     // Save preference
     localStorage.setItem('pyplayground_theme', next);
+}
+
+// ===================================================================
+// RUN TARGET (Browser vs Server)
+// ===================================================================
+
+const RUN_TARGET_KEY = 'pyplayground_run_target';
+
+/**
+ * Show the Browser/Server toggle if the server can run code, and restore
+ * the user's last choice. Without server support, code always runs in the browser.
+ */
+async function initRunTarget() {
+    const config = await getServerConfig();
+    if (!config.serverExecution) return;
+
+    elements.runTarget.hidden = false;
+    elements.runTargetBtns.forEach(btn => {
+        btn.addEventListener('click', () => setRunTarget(btn.dataset.target));
+    });
+
+    let saved = null;
+    try {
+        saved = localStorage.getItem(RUN_TARGET_KEY);
+    } catch (err) {
+        // Storage can be unavailable (e.g. private browsing) — just use the default
+    }
+    if (saved === 'server') setRunTarget('server');
+}
+
+function setRunTarget(target) {
+    if (isRunning) return;
+    runTarget = target;
+
+    elements.runTargetBtns.forEach(btn => {
+        const active = btn.dataset.target === target;
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-checked', String(active));
+    });
+
+    // The server is always ready; the browser runtime may still be loading
+    if (target === 'server' || isPyodideReady) {
+        setStatus('ready', 'Ready');
+    } else {
+        setStatus('loading', 'Loading Python...');
+    }
+
+    try {
+        localStorage.setItem(RUN_TARGET_KEY, target);
+    } catch (err) {
+        // Not being able to remember the choice is fine
+    }
 }
 
 function restoreTheme() {

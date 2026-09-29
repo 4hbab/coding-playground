@@ -23,7 +23,7 @@ var contentSecurityPolicy = strings.Join([]string{
 	"font-src https://fonts.gstatic.com https://cdnjs.cloudflare.com",
 	"img-src 'self' data: https://avatars.githubusercontent.com",
 	"connect-src 'self' https://cdn.jsdelivr.net",
-	"worker-src 'self'",
+	"worker-src 'self' blob:", // Monaco starts its language worker from a blob: URL
 	"base-uri 'none'",
 	"form-action 'self'",
 	"frame-ancestors 'none'",
