@@ -16,6 +16,8 @@ type ExecutionResult struct {
 	Stderr   string        `json:"stderr"`
 	ExitCode int           `json:"exitCode"`
 	Duration time.Duration `json:"duration"`
+	// Truncated is true when stdout or stderr went over the output limit and was cut.
+	Truncated bool `json:"truncated"`
 }
 
 // Executor represents the core interface for running code in an isolated environment.

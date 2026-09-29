@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,6 +76,21 @@ func TestExecuteHandler_HandleExecute(t *testing.T) {
 		h.HandleExecute(rr, req)
 
 		assert.Equal(t, http.StatusBadRequest, rr.Code)
+	})
+
+	t.Run("request body over the size limit", func(t *testing.T) {
+		mockExec := &MockExecutor{}
+		h := handler.NewExecuteHandler(mockExec, logger)
+
+		code := strings.Repeat("x", handler.MaxExecuteRequestBytes+1)
+		reqBody := `{"code":"` + code + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/execute", bytes.NewBufferString(reqBody))
+		rr := httptest.NewRecorder()
+
+		h.HandleExecute(rr, req)
+
+		assert.Equal(t, http.StatusRequestEntityTooLarge, rr.Code)
+		assert.Empty(t, mockExec.CapturedReq.Code, "oversized code must never reach the executor")
 	})
 
 	t.Run("empty code", func(t *testing.T) {

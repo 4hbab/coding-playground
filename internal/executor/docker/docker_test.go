@@ -73,6 +73,7 @@ func TestDockerExecutor(t *testing.T) {
 		assert.Equal(t, 0, res.ExitCode)
 		assert.Contains(t, res.Stdout, "Hello from test sandbox!")
 		assert.Empty(t, res.Stderr)
+		assert.False(t, res.Truncated)
 		assert.Greater(t, res.Duration, time.Duration(0))
 	})
 
