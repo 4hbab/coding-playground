@@ -1,0 +1,13 @@
+version: "2"
+
+linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - bodyclose # HTTP response bodies must be closed
+    - errorlint # wrapped errors must be compared with errors.Is / errors.As
+    - gosec # security checks (file permissions, weak crypto, etc.)
+
+formatters:
+  enable:
+    - gofmt

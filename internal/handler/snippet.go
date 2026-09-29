@@ -15,13 +15,13 @@
 // We use dedicated request structs (CreateSnippetRequest, UpdateSnippetRequest)
 // instead of decoding directly into model.Snippet. Why?
 //
-// 1. DECOUPLING: The API request shape can differ from the database model.
-//    Example: the request has {name, code} but the model also has {id, createdAt, updatedAt}.
-//    Clients shouldn't send (or even know about) auto-generated fields.
+//  1. DECOUPLING: The API request shape can differ from the database model.
+//     Example: the request has {name, code} but the model also has {id, createdAt, updatedAt}.
+//     Clients shouldn't send (or even know about) auto-generated fields.
 //
-// 2. SECURITY: If we decode into model.Snippet, a malicious client could send
-//    {"id": "someone-elses-id"} and overwrite data they don't own.
-//    With a request struct, we control exactly which fields the client can set.
+//  2. SECURITY: If we decode into model.Snippet, a malicious client could send
+//     {"id": "someone-elses-id"} and overwrite data they don't own.
+//     With a request struct, we control exactly which fields the client can set.
 //
 // 3. EVOLUTION: We can change the API format without changing the model (or vice versa).
 package handler
@@ -47,7 +47,8 @@ type SnippetHandler struct {
 // DEPENDENCY INJECTION:
 // The handler receives the service as a parameter (not creating it internally).
 // The full dependency chain is wired in main.go / server.go:
-//   DB → Repository → Service → Handler
+//
+//	DB → Repository → Service → Handler
 //
 // Each layer only knows about the one directly below it.
 func NewSnippetHandler(svc *service.SnippetService, logger *slog.Logger) *SnippetHandler {

@@ -21,10 +21,10 @@ import (
 func TestErrorsIs(t *testing.T) {
 	// Each test case checks that errors.Is() correctly identifies the error type
 	tests := []struct {
-		name     string // Descriptive name for test output
-		err      error  // The error to test
-		target   error  // What we expect it to match
-		wantMatch bool  // Should errors.Is() return true?
+		name      string // Descriptive name for test output
+		err       error  // The error to test
+		target    error  // What we expect it to match
+		wantMatch bool   // Should errors.Is() return true?
 	}{
 		{
 			name:      "NotFound wraps ErrNotFound",
@@ -111,7 +111,7 @@ func TestUnwrap(t *testing.T) {
 	err := NotFound("snippet", "abc123")
 	unwrapped := err.Unwrap()
 
-	if unwrapped != ErrNotFound {
+	if unwrapped != ErrNotFound { //nolint:errorlint // asserting identity: Unwrap must return the sentinel itself
 		t.Errorf("Unwrap() = %v, want %v", unwrapped, ErrNotFound)
 	}
 }

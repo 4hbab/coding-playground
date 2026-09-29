@@ -28,7 +28,7 @@ func newTestDB(t *testing.T) *DB {
 	}
 	// t.Cleanup registers a function to run when the test finishes.
 	// This is like defer, but scoped to the test — even works in subtests.
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 

@@ -9,16 +9,51 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/docker/docker/client"
 	"github.com/sakif/coding-playground/internal/executor"
 	"github.com/sakif/coding-playground/internal/executor/docker"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestDockerExecutor(t *testing.T) {
-	// Skip in CI environments if docker is not available
-	if os.Getenv("CI") != "" {
-		t.Skip("Skipping docker test in CI environment")
+// requireDocker skips the test when no Docker daemon is reachable.
+// With REQUIRE_DOCKER=1 (set in CI) a missing daemon fails the test instead,
+// so the sandbox tests can never be skipped silently.
+func requireDocker(t *testing.T) {
+	t.Helper()
+
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err == nil {
+		defer func() { _ = cli.Close() }()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, err = cli.Ping(ctx)
 	}
+	if err == nil {
+		return
+	}
+
+	if os.Getenv("REQUIRE_DOCKER") == "1" {
+		t.Fatalf("REQUIRE_DOCKER=1 but the Docker daemon is unreachable: %v", err)
+	}
+	t.Skipf("Docker daemon unreachable, skipping sandbox tests: %v", err)
+}
+
+// newTestExecutor starts an executor and stops it (removing its containers) when the test ends.
+// There is no need to wait for the pool to warm up: Execute blocks until a container is ready.
+func newTestExecutor(t *testing.T, cfg docker.Config, logger *slog.Logger) *docker.Executor {
+	t.Helper()
+
+	exec, err := docker.New(cfg, logger)
+	require.NoError(t, err, "Should initialize docker executor without error")
+	t.Cleanup(func() {
+		assert.NoError(t, exec.Close())
+	})
+	return exec
+}
+
+func TestDockerExecutor(t *testing.T) {
+	requireDocker(t)
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
@@ -26,12 +61,7 @@ func TestDockerExecutor(t *testing.T) {
 	// reduce pool size for local test speed
 	cfg.PoolSize = 1
 
-	exec, err := docker.New(cfg, logger)
-	assert.NoError(t, err, "Should initialize docker executor without error")
-	defer exec.Close()
-
-	// Wait a moment for the pool manager to start and warm up containers
-	time.Sleep(2 * time.Second)
+	exec := newTestExecutor(t, cfg, logger)
 
 	t.Run("successful execution", func(t *testing.T) {
 		req := executor.ExecutionRequest{
@@ -39,7 +69,7 @@ func TestDockerExecutor(t *testing.T) {
 		}
 
 		res, err := exec.Execute(context.Background(), req)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, 0, res.ExitCode)
 		assert.Contains(t, res.Stdout, "Hello from test sandbox!")
 		assert.Empty(t, res.Stderr)
@@ -52,7 +82,7 @@ func TestDockerExecutor(t *testing.T) {
 		}
 
 		res, err := exec.Execute(context.Background(), req)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.NotEqual(t, 0, res.ExitCode)
 		assert.Contains(t, res.Stderr, "SyntaxError")
 		assert.Empty(t, res.Stdout)
@@ -60,18 +90,16 @@ func TestDockerExecutor(t *testing.T) {
 
 	t.Run("infinite loop timeout", func(t *testing.T) {
 		// Override timeout for this test to be fast
-		cfg.Timeout = 2 * time.Second
-		fastExec, err := docker.New(cfg, logger)
-		assert.NoError(t, err)
-		defer fastExec.Close()
-		time.Sleep(1 * time.Second) // Wait for pool
+		fastCfg := cfg
+		fastCfg.Timeout = 2 * time.Second
+		fastExec := newTestExecutor(t, fastCfg, logger)
 
 		req := executor.ExecutionRequest{
 			Code: `while True: pass`,
 		}
 
 		res, err := fastExec.Execute(context.Background(), req)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, 124, res.ExitCode) // Our custom timeout format
 		assert.Contains(t, res.Stderr, "timed out")
 	})
@@ -87,7 +115,7 @@ func TestDockerExecutor(t *testing.T) {
 		}
 
 		res, err := exec.Execute(context.Background(), req)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, 0, res.ExitCode)
 		assert.Contains(t, res.Stdout, "5")
 	})

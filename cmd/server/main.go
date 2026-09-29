@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/sakif/coding-playground/internal/executor"
 	"github.com/sakif/coding-playground/internal/executor/docker"
 	"github.com/sakif/coding-playground/internal/server"
 )
@@ -76,9 +77,9 @@ func main() {
 
 	// Ensure the data directory exists.
 	// os.MkdirAll creates all parent directories if needed (like `mkdir -p`).
-	// 0755 = owner can read/write/execute, others can read/execute.
+	// 0750 = owner can read/write/execute, group can read/execute, others get nothing.
 	dbDir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dbDir, 0755); err != nil {
+	if err := os.MkdirAll(dbDir, 0750); err != nil { //nolint:gosec // G703: DB_PATH is operator config, not user input
 		logger.Error("failed to create database directory",
 			slog.String("dir", dbDir),
 			slog.String("error", err.Error()),
@@ -88,14 +89,23 @@ func main() {
 
 	// === 5. INITIALIZE EXECUTOR ===
 	// Docker executor is optional — server starts without it but /api/execute will be unavailable.
-	exec, err := docker.New(docker.DefaultConfig(), logger)
+	//
+	// exec is declared as the interface type on purpose: assigning a nil *docker.Executor
+	// to an interface produces a non-nil interface, which would make the server think
+	// Docker is available. Leaving the interface unset keeps it truly nil.
+	var exec executor.Executor
+	dockerExec, err := docker.New(docker.DefaultConfig(), logger)
 	if err != nil {
-		logger.Warn("Docker executor unavailable — /api/execute will return errors",
+		logger.Warn("Docker executor unavailable — /api/execute will not be registered",
 			slog.String("error", err.Error()),
 		)
-		exec = nil
 	} else {
-		defer exec.Close()
+		exec = dockerExec
+		defer func() {
+			if err := dockerExec.Close(); err != nil {
+				logger.Error("failed to close docker executor", slog.String("error", err.Error()))
+			}
+		}()
 	}
 
 	// === 6. AUTH CONFIGURATION ===
@@ -111,6 +121,10 @@ func main() {
 		logger.Warn("JWT_SECRET not set — authentication will be disabled")
 	}
 
+	// COOKIE_SECURE=true marks auth cookies HTTPS-only. Leave it unset for
+	// http://localhost development; set it in production.
+	cookieSecure := os.Getenv("COOKIE_SECURE") == "true"
+
 	// === 7. CREATE AND START THE SERVER ===
 	// We create the server config, build the server, and start it.
 	// If anything fails, we log the error and exit with code 1 (non-zero = error).
@@ -123,6 +137,7 @@ func main() {
 		GitHubClientID:     githubClientID,
 		GitHubClientSecret: githubClientSecret,
 		GitHubCallbackURL:  githubCallbackURL,
+		CookieSecure:       cookieSecure,
 	}
 
 	srv, err := server.New(cfg, logger, exec)

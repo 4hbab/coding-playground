@@ -14,10 +14,10 @@ import "time"
 //	snippet := Snippet{ID: "abc", Name: "hello"}
 //	json.Marshal(snippet) → {"id":"abc","name":"hello",...}
 type Snippet struct {
-    ID          string    `json:"id"          db:"id"`
-    Name        string    `json:"name"        db:"name"`
-    Code        string    `json:"code"        db:"code"`
-    Description string    `json:"description" db:"description"`
-    CreatedAt   time.Time `json:"createdAt"   db:"created_at"`
-    UpdatedAt   time.Time `json:"updatedAt"   db:"updated_at"`
+	ID          string    `json:"id"          db:"id"`
+	Name        string    `json:"name"        db:"name"`
+	Code        string    `json:"code"        db:"code"`
+	Description string    `json:"description" db:"description"`
+	CreatedAt   time.Time `json:"createdAt"   db:"created_at"`
+	UpdatedAt   time.Time `json:"updatedAt"   db:"updated_at"`
 }

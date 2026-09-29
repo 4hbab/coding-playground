@@ -3,7 +3,6 @@ package handler
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -17,15 +16,34 @@ type AuthHandler struct {
 	authService *service.AuthService
 	github      *auth.GitHubProvider
 	logger      *slog.Logger
+	// secureCookies sets the Secure flag on every cookie we issue, so browsers
+	// only send them over HTTPS. Must be true in production; false for http://localhost.
+	secureCookies bool
 }
 
 // NewAuthHandler creates a new AuthHandler.
-func NewAuthHandler(as *service.AuthService, gh *auth.GitHubProvider, logger *slog.Logger) *AuthHandler {
+func NewAuthHandler(as *service.AuthService, gh *auth.GitHubProvider, logger *slog.Logger, secureCookies bool) *AuthHandler {
 	return &AuthHandler{
-		authService: as,
-		github:      gh,
-		logger:      logger,
+		authService:   as,
+		github:        gh,
+		logger:        logger,
+		secureCookies: secureCookies,
 	}
+}
+
+// setCookie writes an HttpOnly, SameSite=Lax cookie scoped to the whole site.
+// A negative maxAge deletes the cookie.
+func (h *AuthHandler) setCookie(w http.ResponseWriter, name, value string, maxAge int) {
+	//nolint:gosec // G124: Secure comes from config (COOKIE_SECURE); it is only false for http://localhost dev
+	http.SetCookie(w, &http.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     "/",
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		Secure:   h.secureCookies,
+		SameSite: http.SameSiteLaxMode,
+	})
 }
 
 // HandleGitHubLogin redirects the user to GitHub's OAuth authorization page.
@@ -46,14 +64,7 @@ func (h *AuthHandler) HandleGitHubLogin(w http.ResponseWriter, r *http.Request) 
 	state := hex.EncodeToString(stateBytes)
 
 	// Store state in a short-lived cookie (5 minutes, HttpOnly, SameSite=Lax)
-	http.SetCookie(w, &http.Cookie{
-		Name:     "oauth_state",
-		Value:    state,
-		Path:     "/",
-		MaxAge:   300, // 5 minutes
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
+	h.setCookie(w, "oauth_state", state, 300)
 
 	// Redirect to GitHub
 	url := h.github.AuthURL(state)
@@ -79,13 +90,7 @@ func (h *AuthHandler) HandleGitHubCallback(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Clear the state cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     "oauth_state",
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-	})
+	h.setCookie(w, "oauth_state", "", -1)
 
 	// 2. Check for OAuth errors from GitHub
 	if errMsg := r.URL.Query().Get("error"); errMsg != "" {
@@ -111,16 +116,8 @@ func (h *AuthHandler) HandleGitHubCallback(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// 4. Set the JWT in an HttpOnly cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     auth.CookieName,
-		Value:    result.Token,
-		Path:     "/",
-		MaxAge:   3600, // 1 hour (matches JWT expiry)
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		// Secure:   true, // uncomment in production (requires HTTPS)
-	})
+	// 4. Set the JWT in an HttpOnly cookie (1 hour, matches JWT expiry)
+	h.setCookie(w, auth.CookieName, result.Token, int(TokenExpiry.Seconds()))
 
 	h.logger.Info("user logged in",
 		slog.String("user_id", result.User.ID),
@@ -133,17 +130,9 @@ func (h *AuthHandler) HandleGitHubCallback(w http.ResponseWriter, r *http.Reques
 
 // HandleLogout clears the JWT cookie.
 func (h *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     auth.CookieName,
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1, // delete the cookie
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
+	h.setCookie(w, auth.CookieName, "", -1) // delete the cookie
 
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"message": "logged out"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "logged out"})
 }
 
 // HandleMe returns the current authenticated user's profile.
@@ -151,9 +140,7 @@ func (h *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandler) HandleMe(w http.ResponseWriter, r *http.Request) {
 	userID, ok := auth.UserIDFromContext(r.Context())
 	if !ok || userID == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "not authenticated"})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not authenticated"})
 		return
 	}
 
@@ -164,14 +151,11 @@ func (h *AuthHandler) HandleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if user == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "user not found"})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "user not found"})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(user)
+	writeJSON(w, http.StatusOK, user)
 }
 
 // TokenExpiry is exported so server.go can set cookie max-age consistently.

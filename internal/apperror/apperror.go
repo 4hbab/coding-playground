@@ -7,7 +7,7 @@ import (
 
 var (
 	ErrNotFound   = errors.New("not found")
-	ErrValidation = errors.New("Validation Error")
+	ErrValidation = errors.New("validation error")
 	ErrConflict   = errors.New("conflict")
 	ErrForbidden  = errors.New("forbidden")
 )
