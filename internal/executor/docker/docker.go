@@ -16,6 +16,41 @@ import (
 	"github.com/sakif/coding-playground/internal/executor"
 )
 
+// exitCodeKilled is what a process reports when it receives SIGKILL (128 + 9).
+// Timeouts are reported as 124 and are handled separately, so inside the sandbox
+// SIGKILL almost always means the kernel's out-of-memory killer stopped the program
+// (the only other way is the program killing itself).
+const exitCodeKilled = 137
+
+// cappedBuffer keeps at most limit bytes and silently drops the rest.
+// It always reports the full write as successful so the output stream keeps
+// draining; otherwise a program printing in a loop would block instead of finishing.
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if remaining := b.limit - b.buf.Len(); n > remaining {
+		b.truncated = true
+		p = p[:max(remaining, 0)]
+	}
+	b.buf.Write(p)
+	return n, nil
+}
+
+func (b *cappedBuffer) String() string {
+	return b.buf.String()
+}
+
+// note appends a message from the sandbox itself (such as "timed out"). It is not
+// subject to the limit, so the user always sees why their program was stopped.
+func (b *cappedBuffer) note(msg string) {
+	b.buf.WriteString(msg)
+}
+
 // Executor implements the executor.Executor interface using Docker.
 type Executor struct {
 	cli    *client.Client
@@ -92,8 +127,8 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecutionRequest) (
 	executeCtx, executeCancel := context.WithTimeout(ctx, e.config.Timeout)
 	defer executeCancel()
 
-	// Copy the code into the container (using `python -c`) or by running `docker exec`.
-	// Since we already started it with `sleep 3600`, we can `docker exec` the code.
+	// The pooled container is already running `sleep infinity`, so we `docker exec`
+	// the code into it with `python -c`.
 	execConfig := container.ExecOptions{
 		AttachStdout: true,
 		AttachStderr: true,
@@ -111,13 +146,14 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecutionRequest) (
 	}
 	defer attachResp.Close()
 
-	var stdout, stderr bytes.Buffer
+	stdout := &cappedBuffer{limit: e.config.OutputLimit}
+	stderr := &cappedBuffer{limit: e.config.OutputLimit}
 
 	// Channels to manage sync and timeout
 	done := make(chan struct{})
 	go func() {
 		// Use stdcopy to demultiplex stdout from stderr
-		_, _ = stdcopy.StdCopy(&stdout, &stderr, attachResp.Reader)
+		_, _ = stdcopy.StdCopy(stdout, stderr, attachResp.Reader)
 		close(done)
 	}()
 
@@ -127,8 +163,13 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecutionRequest) (
 	case <-done:
 		// Completed normally
 		inspectResp, err := e.cli.ContainerExecInspect(ctx, execResp.ID)
-		if err == nil {
-			finalExitCode = inspectResp.ExitCode
+		if err != nil {
+			// Without the exit code we can't tell success from failure, so don't guess.
+			return nil, fmt.Errorf("failed to inspect exec: %w", err)
+		}
+		finalExitCode = inspectResp.ExitCode
+		if finalExitCode == exitCodeKilled {
+			stderr.note(fmt.Sprintf("\nKilled: most likely the program exceeded the memory limit (%d MB).\n", e.config.MemoryLimit/(1024*1024)))
 		}
 	case <-executeCtx.Done():
 		// Timeout reached. Closing the stream unblocks the copier goroutine, and we
@@ -138,13 +179,14 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecutionRequest) (
 		attachResp.Close()
 		<-done
 		finalExitCode = 124 // Custom exit code for timeout (similar to unix timeout command)
-		stderr.WriteString("\nExecution timed out.\n")
+		stderr.note(fmt.Sprintf("\nExecution timed out after %s.\n", e.config.Timeout))
 	}
 
 	return &executor.ExecutionResult{
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
-		ExitCode: finalExitCode,
-		Duration: time.Since(start),
+		Stdout:    stdout.String(),
+		Stderr:    stderr.String(),
+		ExitCode:  finalExitCode,
+		Duration:  time.Since(start),
+		Truncated: stdout.truncated || stderr.truncated,
 	}, nil
 }

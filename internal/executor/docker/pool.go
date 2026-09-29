@@ -105,21 +105,38 @@ func (p *Pool) manager() {
 	}
 }
 
+// hostConfig builds the sandbox limits for a container from the config.
+// It is a pure function so the limits can be unit-tested without Docker.
+func hostConfig(cfg Config) *container.HostConfig {
+	pidsLimit := cfg.PidsLimit
+	return &container.HostConfig{
+		// No network interfaces except loopback: no outbound or inbound traffic.
+		NetworkMode: "none",
+		Resources: container.Resources{
+			Memory: cfg.MemoryLimit,
+			// MemorySwap is memory + swap; setting it equal to Memory disables swap,
+			// otherwise the container could use up to twice the limit.
+			MemorySwap: cfg.MemoryLimit,
+			NanoCPUs:   int64(cfg.CPULimit * 1e9),
+			PidsLimit:  &pidsLimit,
+		},
+		AutoRemove: false,
+		// The root filesystem is read-only; /tmp is a small in-memory scratch area
+		// where nothing can be executed.
+		ReadonlyRootfs: true,
+		Tmpfs: map[string]string{
+			"/tmp": "rw,noexec,nosuid,nodev,mode=1777,size=" + cfg.TmpSize,
+		},
+		// Drop every Linux capability and forbid gaining new privileges (e.g. via setuid binaries).
+		CapDrop:     []string{"ALL"},
+		SecurityOpt: []string{"no-new-privileges"},
+	}
+}
+
 // createContainer starts a container running `sleep infinity`.
 func (p *Pool) createContainer() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	hostConfig := &container.HostConfig{
-		NetworkMode: "none",
-		Resources: container.Resources{
-			Memory:   p.config.MemoryLimit,
-			NanoCPUs: int64(p.config.CPULimit * 1e9),
-		},
-		AutoRemove: false,
-		// Ensure filesystem is mostly read-only except /tmp
-		ReadonlyRootfs: true,
-	}
 
 	resp, err := p.cli.ContainerCreate(ctx, &container.Config{
 		Image:        p.config.Image,
@@ -127,10 +144,9 @@ func (p *Pool) createContainer() (string, error) {
 		Tty:          false,
 		AttachStdout: false,
 		AttachStderr: false,
-		// We switch to nobody user or python unprivileged user, but root works for alpine by default.
-		// A more secure implementation would explicitly set User: "nobody".
+		// Run as the unprivileged "nobody" user rather than root.
 		User: "nobody",
-	}, hostConfig, nil, nil, "")
+	}, hostConfig(p.config), nil, nil, "")
 
 	if err != nil {
 		return "", fmt.Errorf("ContainerCreate failed: %w", err)

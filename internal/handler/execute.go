@@ -2,11 +2,18 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 
 	"github.com/sakif/coding-playground/internal/executor"
 )
+
+// MaxExecuteRequestBytes caps the size of an execution request body (64 KB).
+// Larger bodies are rejected before they are read into memory or reach Docker.
+// The code is passed to the container as a command-line argument, so it also
+// keeps well below the kernel's per-argument size limit.
+const MaxExecuteRequestBytes = 64 * 1024
 
 // ExecuteHandler handles code execution requests.
 type ExecuteHandler struct {
@@ -24,8 +31,15 @@ func NewExecuteHandler(exec executor.Executor, logger *slog.Logger) *ExecuteHand
 
 // HandleExecute processes an incoming Python code execution request.
 func (h *ExecuteHandler) HandleExecute(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, MaxExecuteRequestBytes)
+
 	var req executor.ExecutionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "code is too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		h.logger.Warn("invalid execution request body", slog.String("error", err.Error()))
 		http.Error(w, "invalid request configuration", http.StatusBadRequest)
 		return
