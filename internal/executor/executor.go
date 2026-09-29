@@ -2,8 +2,13 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrBusy means every sandbox is in use and none became free in time.
+// It is temporary: the client should retry shortly.
+var ErrBusy = errors.New("all sandboxes are busy")
 
 // ExecutionRequest represents a request to execute Python code.
 type ExecutionRequest struct {

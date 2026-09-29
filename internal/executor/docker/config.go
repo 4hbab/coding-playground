@@ -17,6 +17,10 @@ type Config struct {
 	Timeout time.Duration
 	// PoolSize is the number of pre-warmed containers to maintain.
 	PoolSize int
+	// AcquireTimeout is how long a request waits for a free container before
+	// giving up with executor.ErrBusy. Timeout + AcquireTimeout must stay below
+	// the HTTP server's write timeout.
+	AcquireTimeout time.Duration
 	// PidsLimit is the maximum number of processes/threads in the container (stops fork bombs).
 	PidsLimit int64
 	// TmpSize is the size of the writable in-memory /tmp, in Docker's tmpfs syntax (e.g. "16m").
@@ -36,8 +40,9 @@ func DefaultConfig() Config {
 		// 0.5 CPU shares
 		CPULimit: 0.5,
 		// 5 second default timeout
-		Timeout:  5 * time.Second,
-		PoolSize: 3,
+		Timeout:        5 * time.Second,
+		PoolSize:       3,
+		AcquireTimeout: 5 * time.Second,
 		// Enough for normal programs and multiprocessing demos, far too few for a fork bomb
 		PidsLimit: 64,
 		// 16 MB of scratch space in /tmp (counts against MemoryLimit)

@@ -53,6 +53,12 @@ func (h *ExecuteHandler) HandleExecute(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("executing python code snippet")
 
 	result, err := h.exec.Execute(r.Context(), req)
+	if errors.Is(err, executor.ErrBusy) {
+		h.logger.Warn("all sandboxes busy")
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "all sandboxes are busy, try again in a few seconds", http.StatusServiceUnavailable)
+		return
+	}
 	if err != nil {
 		h.logger.Error("code execution failed", slog.String("error", err.Error()))
 		http.Error(w, "internal server error during execution", http.StatusInternalServerError)

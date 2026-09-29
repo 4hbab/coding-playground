@@ -104,9 +104,15 @@ func (e *Executor) Close() error {
 func (e *Executor) Execute(ctx context.Context, req executor.ExecutionRequest) (*executor.ExecutionResult, error) {
 	start := time.Now()
 
-	// Get a pre-warmed container ID from the pool
-	containerID, err := e.pool.GetContainer(ctx)
+	// Get a pre-warmed container ID from the pool, waiting at most AcquireTimeout
+	acquireCtx, acquireCancel := context.WithTimeout(ctx, e.config.AcquireTimeout)
+	containerID, err := e.pool.GetContainer(acquireCtx)
+	acquireCancel()
 	if err != nil {
+		if ctx.Err() == nil {
+			// Our own wait ran out, not the caller's context: every sandbox is in use.
+			return nil, executor.ErrBusy
+		}
 		return nil, fmt.Errorf("failed to get container from pool: %w", err)
 	}
 
