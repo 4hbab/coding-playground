@@ -135,10 +135,12 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecutionRequest) (
 
 	// The pooled container is already running `sleep infinity`, so we `docker exec`
 	// the code into it with `python -c`.
+	// -u makes output unbuffered: Python buffers stdout when it isn't a terminal, so
+	// anything printed before a timeout or out-of-memory kill would otherwise be lost.
 	execConfig := container.ExecOptions{
 		AttachStdout: true,
 		AttachStderr: true,
-		Cmd:          []string{"python", "-c", req.Code},
+		Cmd:          []string{"python", "-u", "-c", req.Code},
 	}
 
 	execResp, err := e.cli.ContainerExecCreate(executeCtx, containerID, execConfig)

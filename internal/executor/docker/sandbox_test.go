@@ -61,6 +61,14 @@ func TestSandboxLimits(t *testing.T) {
 			assert.LessOrEqual(t, len(res.Stdout), cfg.OutputLimit)
 		})
 
+		t.Run("output printed before the timeout is kept", func(t *testing.T) {
+			// Python buffers stdout when it isn't a terminal; without unbuffered
+			// output this line would be lost when the process is killed.
+			res := run(t, "print(\"before the loop\")\nwhile True: pass")
+			assert.Equal(t, 124, res.ExitCode)
+			assert.Equal(t, "before the loop\n", res.Stdout)
+		})
+
 		t.Run("sandbox works again after a timeout", func(t *testing.T) {
 			res := run(t, `print("still alive")`)
 			assert.Equal(t, 0, res.ExitCode)

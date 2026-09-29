@@ -6,6 +6,12 @@
 # Default target — runs when you just type `make`
 .DEFAULT_GOAL := run
 
+# Load local settings from .env (if present) and pass them to the commands below
+ifneq (,$(wildcard .env))
+include .env
+export
+endif
+
 # Keep in sync with the version pinned in .github/workflows/ci.yml
 GOLANGCI_LINT_VERSION := v2.13.2
 
