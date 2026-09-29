@@ -35,6 +35,19 @@
                         </svg>
                     </button>
                 </div>
+                <!-- Run Target: where the code runs (shown only when the server supports it) -->
+                <div id="run-target" class="run-target" role="radiogroup" aria-label="Where to run code" hidden>
+                    <button type="button" class="run-target-btn active" data-target="browser" role="radio"
+                        aria-checked="true"
+                        title="Runs in your browser with Pyodide (WebAssembly). Your code never leaves your computer.">
+                        Browser
+                    </button>
+                    <button type="button" class="run-target-btn" data-target="server" role="radio"
+                        aria-checked="false"
+                        title="Runs on the server in an isolated Docker container with standard CPython and strict time, memory and network limits.">
+                        Server
+                    </button>
+                </div>
                 <!-- Run Button -->
                 <button id="run-btn" class="run-btn" title="Run Code (Ctrl+Enter)">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">

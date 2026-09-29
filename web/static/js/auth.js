@@ -91,8 +91,7 @@ function renderLoggedIn(user) {
     container.innerHTML = `
         <div class="auth-user" id="auth-user-btn">
             <img class="auth-avatar" src="${escapeHtml(user.avatarUrl || '')}" 
-                 alt="${escapeHtml(user.login)}" 
-                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                 alt="${escapeHtml(user.login)}">
             <div class="auth-avatar-fallback" style="display:none">
                 ${escapeHtml(user.login.charAt(0).toUpperCase())}
             </div>
@@ -117,6 +116,15 @@ function renderLoggedIn(user) {
             </button>
         </div>
     `;
+
+    // If the avatar fails to load, show the initial instead.
+    // (Attached here rather than as an inline onerror="" attribute, which the
+    // Content-Security-Policy blocks.)
+    const avatar = container.querySelector('.auth-avatar');
+    avatar.addEventListener('error', () => {
+        avatar.style.display = 'none';
+        avatar.nextElementSibling.style.display = 'flex';
+    });
 
     // Toggle dropdown on click
     const userBtn = document.getElementById('auth-user-btn');

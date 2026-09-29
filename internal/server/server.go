@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -53,9 +54,32 @@ type Config struct {
 	GitHubClientSecret string
 	GitHubCallbackURL  string
 
-	// CookieSecure marks auth cookies as HTTPS-only. Enable it whenever the
-	// site is served over HTTPS (i.e. in production).
-	CookieSecure bool
+	// PublicURL is the address visitors use, e.g. https://pyplayground.example.workers.dev.
+	// An https:// URL turns on HTTPS-only cookies and HSTS. It also gives the default
+	// GitHub callback URL. Defaults to http://localhost:<Port>.
+	PublicURL string
+
+	// ClientIPHeader is the one request header trusted to carry the visitor's IP
+	// (set by the proxy in front of the app). Empty = use the connection address.
+	ClientIPHeader string
+
+	// Requests per minute per client IP. RateLimitStrict applies to the expensive
+	// or sensitive routes (/api/execute and /auth/*), RateLimitDefault to the rest.
+	RateLimitDefault int
+	RateLimitStrict  int
+}
+
+// publicURL returns PublicURL or the localhost default.
+func (c Config) publicURL() string {
+	if c.PublicURL != "" {
+		return strings.TrimSuffix(c.PublicURL, "/")
+	}
+	return fmt.Sprintf("http://localhost:%d", c.Port)
+}
+
+// isHTTPS reports whether the site is served over HTTPS.
+func (c Config) isHTTPS() bool {
+	return strings.HasPrefix(c.publicURL(), "https://")
 }
 
 // Server represents the HTTP server and all its dependencies.
@@ -95,6 +119,7 @@ func New(cfg Config, logger *slog.Logger, exec executor.Executor) (*Server, erro
 // ROUTE STRUCTURE:
 // GET    /                             → Playground page (HTML)
 // GET    /static/*                     → Static files (CSS, JS, images)
+// GET    /healthz                      → Health check
 //
 // AUTH ROUTES (only if JWTSecret is set):
 // GET    /auth/github/login            → Redirect to GitHub OAuth
@@ -103,18 +128,31 @@ func New(cfg Config, logger *slog.Logger, exec executor.Executor) (*Server, erro
 // GET    /api/me                       → Current user profile (RequireAuth)
 //
 // API ROUTES:
+// GET    /api/config                   → Frontend configuration
 // GET    /api/snippets                 → List snippets
 // GET    /api/snippets/{id}            → Get snippet
 // POST   /api/snippets                 → Create snippet (OptionalAuth)
 // PUT    /api/snippets/{id}            → Update snippet (OptionalAuth)
 // DELETE /api/snippets/{id}            → Delete snippet (OptionalAuth)
 // POST   /api/execute                  → Execute code (if Docker available)
+//
+// Every route is rate limited per client IP; /auth/* and /api/execute use the stricter limit.
 func (s *Server) setupRoutes() error {
 	// === Global Middleware ===
 	s.router.Use(chimiddleware.RequestID)
-	s.router.Use(chimiddleware.RealIP)
+	s.router.Use(middleware.ClientIP(s.config.ClientIPHeader))
 	s.router.Use(chimiddleware.Recoverer)
 	s.router.Use(middleware.Logger(s.logger))
+	s.router.Use(middleware.SecurityHeaders(s.config.isHTTPS()))
+	s.router.Use(middleware.NewRateLimiter(s.config.RateLimitDefault, time.Minute).Middleware)
+
+	// Stricter per-IP limits for running code and for signing in.
+	// Separate limiters so the two don't share one budget.
+	authLimit := middleware.NewRateLimiter(s.config.RateLimitStrict, time.Minute).Middleware
+	executeLimit := middleware.NewRateLimiter(s.config.RateLimitStrict, time.Minute).Middleware
+
+	// === Health Check (used by Docker Compose to know the app is up) ===
+	s.router.Get("/healthz", handler.HandleHealth)
 
 	// === Static Files ===
 	fileServer := http.FileServer(http.Dir(s.config.StaticDir))
@@ -140,7 +178,7 @@ func (s *Server) setupRoutes() error {
 		if s.config.GitHubClientID != "" && s.config.GitHubClientSecret != "" {
 			callbackURL := s.config.GitHubCallbackURL
 			if callbackURL == "" {
-				callbackURL = fmt.Sprintf("http://localhost:%d/auth/github/callback", s.config.Port)
+				callbackURL = s.config.publicURL() + "/auth/github/callback"
 			}
 
 			githubProvider := auth.NewGitHubProvider(
@@ -150,12 +188,15 @@ func (s *Server) setupRoutes() error {
 			)
 
 			authService := service.NewAuthService(s.db, githubProvider, tokenService, s.logger)
-			authHandler := handler.NewAuthHandler(authService, githubProvider, s.logger, s.config.CookieSecure)
+			authHandler := handler.NewAuthHandler(authService, githubProvider, s.logger, s.config.isHTTPS())
 
 			// Auth routes
-			s.router.Get("/auth/github/login", authHandler.HandleGitHubLogin)
-			s.router.Get("/auth/github/callback", authHandler.HandleGitHubCallback)
-			s.router.Post("/auth/logout", authHandler.HandleLogout)
+			s.router.Route("/auth", func(r chi.Router) {
+				r.Use(authLimit)
+				r.Get("/github/login", authHandler.HandleGitHubLogin)
+				r.Get("/github/callback", authHandler.HandleGitHubCallback)
+				r.Post("/logout", authHandler.HandleLogout)
+			})
 
 			s.logger.Info("GitHub OAuth enabled")
 		} else {
@@ -170,6 +211,9 @@ func (s *Server) setupRoutes() error {
 	snippetHandler := handler.NewSnippetHandler(snippetService, s.logger)
 
 	s.router.Route("/api", func(r chi.Router) {
+		// Frontend configuration (which features are available)
+		r.Get("/config", handler.NewConfigHandler(s.exec != nil).HandleConfig)
+
 		// /api/me requires authentication
 		if tokenService != nil {
 			r.With(auth.RequireAuth(tokenService)).Get("/me", func(w http.ResponseWriter, req *http.Request) {
@@ -217,7 +261,7 @@ func (s *Server) setupRoutes() error {
 		// /api/execute only available when Docker executor is running
 		if s.exec != nil {
 			executeHandler := handler.NewExecuteHandler(s.exec, s.logger)
-			r.Post("/execute", executeHandler.HandleExecute)
+			r.With(executeLimit).Post("/execute", executeHandler.HandleExecute)
 		}
 	})
 

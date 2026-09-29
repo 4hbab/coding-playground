@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -91,6 +92,19 @@ func TestExecuteHandler_HandleExecute(t *testing.T) {
 
 		assert.Equal(t, http.StatusRequestEntityTooLarge, rr.Code)
 		assert.Empty(t, mockExec.CapturedReq.Code, "oversized code must never reach the executor")
+	})
+
+	t.Run("all sandboxes busy", func(t *testing.T) {
+		mockExec := &MockExecutor{ReturnErr: fmt.Errorf("docker: %w", executor.ErrBusy)}
+		h := handler.NewExecuteHandler(mockExec, logger)
+
+		req := httptest.NewRequest(http.MethodPost, "/api/execute", bytes.NewBufferString(`{"code":"print(1)"}`))
+		rr := httptest.NewRecorder()
+
+		h.HandleExecute(rr, req)
+
+		assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+		assert.NotEmpty(t, rr.Header().Get("Retry-After"), "clients need to know when to try again")
 	})
 
 	t.Run("empty code", func(t *testing.T) {

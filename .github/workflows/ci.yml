@@ -53,3 +53,12 @@ jobs:
 
       - name: go test -race
         run: go test -race -count=1 ./...
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build image
+        run: docker build -t pyplayground:ci .

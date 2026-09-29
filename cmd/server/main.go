@@ -17,6 +17,7 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -29,14 +30,21 @@ import (
 
 func main() {
 	// === 1. SET UP LOGGING ===
-	// slog.New creates a structured logger. slog.NewTextHandler outputs human-readable logs.
-	// os.Stdout means logs go to the terminal. slog.LevelDebug enables all log levels.
+	// slog.New creates a structured logger. Logs go to stdout, where Docker collects them.
 	//
 	// Log levels (from least to most severe): Debug → Info → Warn → Error
-	// In production, you'd use LevelInfo or LevelWarn to reduce noise.
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
+	// LOG_LEVEL picks the minimum level (default debug for development; use info in production).
+	// LOG_FORMAT=json gives one JSON object per line, which log tools can parse.
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(envOr("LOG_LEVEL", "debug"))); err != nil {
+		level = slog.LevelDebug
+	}
+	opts := &slog.HandlerOptions{Level: level}
+	var logHandler slog.Handler = slog.NewTextHandler(os.Stdout, opts)
+	if os.Getenv("LOG_FORMAT") == "json" {
+		logHandler = slog.NewJSONHandler(os.Stdout, opts)
+	}
+	logger := slog.New(logHandler)
 
 	// === 2. READ CONFIGURATION ===
 	// We read the port from the PORT environment variable, defaulting to 8080.
@@ -121,11 +129,26 @@ func main() {
 		logger.Warn("JWT_SECRET not set — authentication will be disabled")
 	}
 
-	// COOKIE_SECURE=true marks auth cookies HTTPS-only. Leave it unset for
-	// http://localhost development; set it in production.
-	cookieSecure := os.Getenv("COOKIE_SECURE") == "true"
+	// === 7. PUBLIC ACCESS ===
+	// PUBLIC_URL is the address visitors use. An https:// URL turns on HTTPS-only
+	// cookies and HSTS. Leave it unset for http://localhost development.
+	//
+	// CLIENT_IP_HEADER names the one header trusted to carry the visitor's IP. Only set
+	// it when the app is reachable exclusively through a proxy that sets that header.
+	//
+	// RATE_LIMIT_DEFAULT / RATE_LIMIT_STRICT are requests per minute per IP.
+	rateLimitDefault, err := envInt("RATE_LIMIT_DEFAULT", 300)
+	if err != nil {
+		logger.Error("invalid RATE_LIMIT_DEFAULT", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	rateLimitStrict, err := envInt("RATE_LIMIT_STRICT", 10)
+	if err != nil {
+		logger.Error("invalid RATE_LIMIT_STRICT", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
 
-	// === 7. CREATE AND START THE SERVER ===
+	// === 8. CREATE AND START THE SERVER ===
 	// We create the server config, build the server, and start it.
 	// If anything fails, we log the error and exit with code 1 (non-zero = error).
 	cfg := server.Config{
@@ -137,7 +160,10 @@ func main() {
 		GitHubClientID:     githubClientID,
 		GitHubClientSecret: githubClientSecret,
 		GitHubCallbackURL:  githubCallbackURL,
-		CookieSecure:       cookieSecure,
+		PublicURL:          os.Getenv("PUBLIC_URL"),
+		ClientIPHeader:     os.Getenv("CLIENT_IP_HEADER"),
+		RateLimitDefault:   rateLimitDefault,
+		RateLimitStrict:    rateLimitStrict,
 	}
 
 	srv, err := server.New(cfg, logger, exec)
@@ -151,4 +177,25 @@ func main() {
 		logger.Error("server error", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
+}
+
+// envOr returns the environment variable, or def when it is unset or empty.
+func envOr(name, def string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return def
+}
+
+// envInt returns the environment variable as a positive integer, or def when it is unset.
+func envInt(name string, def int) (int, error) {
+	v := os.Getenv(name)
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer, got %q", name, v)
+	}
+	return n, nil
 }
