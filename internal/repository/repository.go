@@ -9,6 +9,9 @@ import (
 type ListOptions struct {
 	Limit  int
 	Offset int
+	// OwnerID limits the list to one user's snippets.
+	// Empty means the snippets saved without an account.
+	OwnerID string
 }
 
 type SnippetRepository interface {

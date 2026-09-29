@@ -383,3 +383,65 @@ func TestFullCRUDLifecycle(t *testing.T) {
 
 	t.Log("Full CRUD lifecycle passed!")
 }
+
+func TestOwnership(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	alice := "user-alice"
+
+	owned := &model.Snippet{Name: "owned", Code: "x", UserID: &alice}
+	if err := db.Create(ctx, owned); err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	shared := createTestSnippet(t, db, "shared", "y")
+
+	t.Run("owner is stored and read back", func(t *testing.T) {
+		got, err := db.GetByID(ctx, owned.ID)
+		if err != nil {
+			t.Fatalf("GetByID() error: %v", err)
+		}
+		if got.UserID == nil || *got.UserID != alice {
+			t.Errorf("UserID = %v, want %q", got.UserID, alice)
+		}
+	})
+
+	t.Run("unowned snippets read back with no owner", func(t *testing.T) {
+		got, err := db.GetByID(ctx, shared.ID)
+		if err != nil {
+			t.Fatalf("GetByID() error: %v", err)
+		}
+		if got.UserID != nil {
+			t.Errorf("UserID = %q, want nil", *got.UserID)
+		}
+	})
+
+	t.Run("list is scoped to one owner", func(t *testing.T) {
+		for _, tc := range []struct {
+			owner string
+			want  string
+		}{{alice, "owned"}, {"", "shared"}, {"user-nobody", ""}} {
+			list, err := db.List(ctx, repository.ListOptions{OwnerID: tc.owner})
+			if err != nil {
+				t.Fatalf("List(%q) error: %v", tc.owner, err)
+			}
+			var names []string
+			for _, s := range list {
+				names = append(names, s.Name)
+			}
+			if tc.want == "" && len(names) != 0 || tc.want != "" && (len(names) != 1 || names[0] != tc.want) {
+				t.Errorf("List(owner=%q) = %v, want [%s]", tc.owner, names, tc.want)
+			}
+		}
+	})
+
+	t.Run("updating keeps the owner", func(t *testing.T) {
+		owned.Name = "renamed"
+		if err := db.Update(ctx, owned); err != nil {
+			t.Fatalf("Update() error: %v", err)
+		}
+		got, _ := db.GetByID(ctx, owned.ID)
+		if got.UserID == nil || *got.UserID != alice {
+			t.Errorf("UserID after update = %v, want %q", got.UserID, alice)
+		}
+	})
+}

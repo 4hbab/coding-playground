@@ -185,5 +185,13 @@ func (db *DB) migrate() error {
 		}
 	}
 
+	// Lists are always for one owner, newest first. Created after the column
+	// exists, so it also works on databases from before user_id was added.
+	if _, err := db.conn.Exec(
+		`CREATE INDEX IF NOT EXISTS idx_snippets_user_created ON snippets(user_id, created_at)`,
+	); err != nil {
+		return fmt.Errorf("creating user_id index: %w", err)
+	}
+
 	return nil
 }

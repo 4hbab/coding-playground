@@ -68,12 +68,13 @@ func (db *DB) Create(ctx context.Context, snippet *model.Snippet) error {
 	// The ? placeholders are filled in order by the arguments after the SQL string.
 	// The driver handles escaping to prevent SQL injection.
 	_, err := db.conn.ExecContext(ctx,
-		`INSERT INTO snippets (id, name, code, description, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO snippets (id, name, code, description, user_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		snippet.ID,
 		snippet.Name,
 		snippet.Code,
 		snippet.Description,
+		snippet.UserID, // a nil pointer is stored as NULL (no owner)
 		snippet.CreatedAt,
 		snippet.UpdatedAt,
 	)
@@ -115,7 +116,7 @@ func (db *DB) GetByID(ctx context.Context, id string) (*model.Snippet, error) {
 	// QueryRowContext runs a SELECT and returns at most one row.
 	// The Scan() call reads column values into our struct fields.
 	err := db.conn.QueryRowContext(ctx,
-		`SELECT id, name, code, description, created_at, updated_at
+		`SELECT id, name, code, description, user_id, created_at, updated_at
 		 FROM snippets
 		 WHERE id = ?`,
 		id,
@@ -124,6 +125,7 @@ func (db *DB) GetByID(ctx context.Context, id string) (*model.Snippet, error) {
 		&snippet.Name,
 		&snippet.Code,
 		&snippet.Description,
+		&snippet.UserID, // NULL scans into a nil pointer
 		&snippet.CreatedAt,
 		&snippet.UpdatedAt,
 	)
@@ -183,12 +185,19 @@ func (db *DB) List(ctx context.Context, opts repository.ListOptions) ([]model.Sn
 		offset = 0
 	}
 
-	// ORDER BY created_at DESC = newest first
+	// Only one owner's snippets: user_id = OwnerID, or user_id IS NULL for the
+	// ones saved without an account. ORDER BY created_at DESC = newest first.
+	var owner any // nil → matches NULL below
+	if opts.OwnerID != "" {
+		owner = opts.OwnerID
+	}
 	rows, err := db.conn.QueryContext(ctx,
-		`SELECT id, name, code, description, created_at, updated_at
+		`SELECT id, name, code, description, user_id, created_at, updated_at
 		 FROM snippets
+		 WHERE user_id IS ?
 		 ORDER BY created_at DESC
 		 LIMIT ? OFFSET ?`,
+		owner,
 		limit,
 		offset,
 	)
@@ -210,7 +219,7 @@ func (db *DB) List(ctx context.Context, opts repository.ListOptions) ([]model.Sn
 	for rows.Next() {
 		var s model.Snippet
 		if err := rows.Scan(
-			&s.ID, &s.Name, &s.Code, &s.Description,
+			&s.ID, &s.Name, &s.Code, &s.Description, &s.UserID,
 			&s.CreatedAt, &s.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("sqlite: scanning snippet row: %w", err)
