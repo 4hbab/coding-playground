@@ -1,0 +1,11 @@
+# Only cmd/, internal/, web/ and go.mod/go.sum are needed to build the image.
+.git
+.github
+.env*
+data
+bin
+screenshots
+worker
+*.md
+Makefile
+start.ps1

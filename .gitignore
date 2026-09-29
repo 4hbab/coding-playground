@@ -1,3 +1,8 @@
 /data
-.env
 tmp_server.exe
+
+# Local and production settings contain secrets; only the examples are committed
+.env
+.env.*
+!.env.example
+!.env.production.example
