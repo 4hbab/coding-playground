@@ -74,7 +74,7 @@ func New(dbPath string) (*DB, error) {
 	// Without this, a bad path or permissions issue would only surface
 	// on the first query — which is much harder to debug.
 	if err := conn.Ping(); err != nil {
-		conn.Close()
+		_ = conn.Close() // the error that got us here is the one worth returning
 		return nil, fmt.Errorf("sqlite: pinging database: %w", err)
 	}
 
@@ -87,14 +87,14 @@ func New(dbPath string) (*DB, error) {
 	// WAL mode allows concurrent reads WHILE a write is happening.
 	// This is critical for a web server where multiple requests hit the DB.
 	if _, err := conn.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		conn.Close()
+		_ = conn.Close() // the error that got us here is the one worth returning
 		return nil, fmt.Errorf("sqlite: setting WAL mode: %w", err)
 	}
 
 	// Foreign keys are OFF by default in SQLite (for backwards compatibility).
 	// We turn them on because we'll want referential integrity later (users → snippets).
 	if _, err := conn.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		conn.Close()
+		_ = conn.Close() // the error that got us here is the one worth returning
 		return nil, fmt.Errorf("sqlite: enabling foreign keys: %w", err)
 	}
 
@@ -102,7 +102,7 @@ func New(dbPath string) (*DB, error) {
 
 	// Run database migrations to create/update tables
 	if err := db.migrate(); err != nil {
-		conn.Close()
+		_ = conn.Close() // the error that got us here is the one worth returning
 		return nil, fmt.Errorf("sqlite: running migrations: %w", err)
 	}
 

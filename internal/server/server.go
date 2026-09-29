@@ -19,6 +19,8 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -50,6 +52,10 @@ type Config struct {
 	GitHubClientID     string
 	GitHubClientSecret string
 	GitHubCallbackURL  string
+
+	// CookieSecure marks auth cookies as HTTPS-only. Enable it whenever the
+	// site is served over HTTPS (i.e. in production).
+	CookieSecure bool
 }
 
 // Server represents the HTTP server and all its dependencies.
@@ -77,7 +83,7 @@ func New(cfg Config, logger *slog.Logger, exec executor.Executor) (*Server, erro
 	}
 
 	if err := s.setupRoutes(); err != nil {
-		db.Close()
+		_ = db.Close() // the setup error is the one worth returning
 		return nil, fmt.Errorf("setting up routes: %w", err)
 	}
 
@@ -144,7 +150,7 @@ func (s *Server) setupRoutes() error {
 			)
 
 			authService := service.NewAuthService(s.db, githubProvider, tokenService, s.logger)
-			authHandler := handler.NewAuthHandler(authService, githubProvider, s.logger)
+			authHandler := handler.NewAuthHandler(authService, githubProvider, s.logger, s.config.CookieSecure)
 
 			// Auth routes
 			s.router.Get("/auth/github/login", authHandler.HandleGitHubLogin)
@@ -179,10 +185,17 @@ func (s *Server) setupRoutes() error {
 					http.Error(w, `{"error":"user not found"}`, http.StatusUnauthorized)
 					return
 				}
+				// Encode an explicit struct rather than formatting a string, so values
+				// are escaped properly and only these fields are ever exposed.
 				w.Header().Set("Content-Type", "application/json")
-				json := fmt.Sprintf(`{"id":"%s","login":"%s","email":"%s","avatarUrl":"%s"}`,
-					user.ID, user.Login, user.Email, user.AvatarURL)
-				w.Write([]byte(json))
+				if err := json.NewEncoder(w).Encode(struct {
+					ID        string `json:"id"`
+					Login     string `json:"login"`
+					Email     string `json:"email"`
+					AvatarURL string `json:"avatarUrl"`
+				}{user.ID, user.Login, user.Email, user.AvatarURL}); err != nil {
+					s.logger.Error("failed to encode /api/me response", slog.String("error", err.Error()))
+				}
 			})
 		}
 
@@ -213,7 +226,11 @@ func (s *Server) setupRoutes() error {
 
 // Start starts the HTTP server and handles graceful shutdown.
 func (s *Server) Start() error {
-	defer s.db.Close()
+	defer func() {
+		if err := s.db.Close(); err != nil {
+			s.logger.Error("failed to close database", slog.String("error", err.Error()))
+		}
+	}()
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", s.config.Port),
@@ -239,7 +256,7 @@ func (s *Server) Start() error {
 
 	select {
 	case err := <-serverErrors:
-		if err != http.ErrServerClosed {
+		if !errors.Is(err, http.ErrServerClosed) {
 			return fmt.Errorf("server error: %w", err)
 		}
 

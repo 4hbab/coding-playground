@@ -3,27 +3,28 @@
 // THE THREE-LAYER ARCHITECTURE:
 // In a well-structured Go web app, code is organised into three layers:
 //
-//   Handler (HTTP layer)    → parses requests, writes responses
-//   Service (Business layer) → validates, enforces rules, orchestrates
-//   Repository (Data layer) → reads/writes to the database
+//	Handler (HTTP layer)    → parses requests, writes responses
+//	Service (Business layer) → validates, enforces rules, orchestrates
+//	Repository (Data layer) → reads/writes to the database
 //
 // WHY A SEPARATE SERVICE LAYER?
 // Without a service layer, handlers do everything: parse HTTP, validate data,
 // call the database, format responses. This creates several problems:
 //
-//   1. TESTING: To test business logic, you'd need to create HTTP requests.
-//      With a service layer, you test business logic with plain Go function calls.
+//  1. TESTING: To test business logic, you'd need to create HTTP requests.
+//     With a service layer, you test business logic with plain Go function calls.
 //
-//   2. REUSE: What if you need the same logic in a CLI tool or a background job?
-//      Handlers are tied to HTTP. Services are not.
+//  2. REUSE: What if you need the same logic in a CLI tool or a background job?
+//     Handlers are tied to HTTP. Services are not.
 //
-//   3. SEPARATION: Handlers should only know about HTTP (status codes, headers, JSON).
-//      Services should only know about business rules (validation, permissions).
-//      Neither should know about SQL or database details.
+//  3. SEPARATION: Handlers should only know about HTTP (status codes, headers, JSON).
+//     Services should only know about business rules (validation, permissions).
+//     Neither should know about SQL or database details.
 //
 // THE DEPENDENCY CHAIN:
-//   main.go creates:  DB → Repository → Service → Handler
-//   At runtime:       Handler calls Service calls Repository calls DB
+//
+//	main.go creates:  DB → Repository → Service → Handler
+//	At runtime:       Handler calls Service calls Repository calls DB
 //
 // DEPENDENCY INJECTION:
 // Notice that SnippetService takes a repository.SnippetRepository (interface),
@@ -90,25 +91,25 @@ func NewSnippetService(repo repository.SnippetRepository, logger *slog.Logger) *
 //
 // IMPORTANT DESIGN DECISIONS:
 //
-// 1. ACCEPT PRIMITIVES, NOT HTTP TYPES:
-//    The method signature is (ctx, name, code, description string), NOT (*http.Request).
-//    This means the service has ZERO knowledge of HTTP. You could call it from:
-//    - An HTTP handler
-//    - A CLI tool
-//    - A background job
-//    - A gRPC server
-//    All without changing this code.
+//  1. ACCEPT PRIMITIVES, NOT HTTP TYPES:
+//     The method signature is (ctx, name, code, description string), NOT (*http.Request).
+//     This means the service has ZERO knowledge of HTTP. You could call it from:
+//     - An HTTP handler
+//     - A CLI tool
+//     - A background job
+//     - A gRPC server
+//     All without changing this code.
 //
-// 2. VALIDATE AT THE SERVICE LEVEL:
-//    The handler does basic parsing (is the JSON valid?).
-//    The service enforces business rules (is the name too long? is it empty?).
-//    Why here and not in the handler? Because EVERY caller needs these rules,
-//    not just the HTTP handler.
+//  2. VALIDATE AT THE SERVICE LEVEL:
+//     The handler does basic parsing (is the JSON valid?).
+//     The service enforces business rules (is the name too long? is it empty?).
+//     Why here and not in the handler? Because EVERY caller needs these rules,
+//     not just the HTTP handler.
 //
-// 3. RETURN DOMAIN ERRORS:
-//    We return apperror.ValidationFailed, NOT http.StatusBadRequest.
-//    The handler translates domain errors to HTTP status codes.
-//    This keeps the service layer HTTP-agnostic.
+//  3. RETURN DOMAIN ERRORS:
+//     We return apperror.ValidationFailed, NOT http.StatusBadRequest.
+//     The handler translates domain errors to HTTP status codes.
+//     This keeps the service layer HTTP-agnostic.
 func (s *SnippetService) Create(ctx context.Context, name, code, description string) (*model.Snippet, error) {
 	// === VALIDATION ===
 	// Trim whitespace first — " hello " becomes "hello"

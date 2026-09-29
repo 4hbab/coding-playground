@@ -66,7 +66,7 @@ func (p *GitHubProvider) GetUser(ctx context.Context, token *oauth2.Token) (*Git
 	if err != nil {
 		return nil, fmt.Errorf("auth: github API request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

@@ -40,9 +40,11 @@ func New(cfg Config, logger *slog.Logger) (*Executor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to pull image: %w", err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	// Read everything to block until the pull is complete
-	io.Copy(io.Discard, reader)
+	if _, err := io.Copy(io.Discard, reader); err != nil {
+		return nil, fmt.Errorf("failed to pull image: %w", err)
+	}
 	logger.Info("docker image is ready")
 
 	exec := &Executor{
@@ -129,7 +131,12 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecutionRequest) (
 			finalExitCode = inspectResp.ExitCode
 		}
 	case <-executeCtx.Done():
-		// Timeout reached
+		// Timeout reached. Closing the stream unblocks the copier goroutine, and we
+		// wait for it to exit before touching stdout/stderr — reading the buffers
+		// while it is still writing to them is a data race.
+		// The process itself is killed when the deferred ContainerRemove runs.
+		attachResp.Close()
+		<-done
 		finalExitCode = 124 // Custom exit code for timeout (similar to unix timeout command)
 		stderr.WriteString("\nExecution timed out.\n")
 	}
