@@ -12,6 +12,8 @@ import (
 	"github.com/sakif/coding-playground/internal/apperror"
 	"github.com/sakif/coding-playground/internal/model"
 	"github.com/sakif/coding-playground/internal/repository"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // =========================================================================
@@ -69,7 +71,14 @@ func (m *mockSnippetRepo) GetByID(_ context.Context, id string) (*model.Snippet,
 func (m *mockSnippetRepo) List(_ context.Context, opts repository.ListOptions) ([]model.Snippet, error) {
 	result := make([]model.Snippet, 0, len(m.snippets))
 	for _, s := range m.snippets {
-		result = append(result, *s)
+		// Same rule as the SQL query: an owner's snippets, or the unowned ones when OwnerID is "".
+		owner := ""
+		if s.UserID != nil {
+			owner = *s.UserID
+		}
+		if owner == opts.OwnerID {
+			result = append(result, *s)
+		}
 	}
 
 	// Apply basic pagination
@@ -122,7 +131,7 @@ func newTestService(t *testing.T) (*SnippetService, *mockSnippetRepo) {
 func TestCreate_Success(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	snippet, err := svc.Create(context.Background(), "hello world", "print('hi')", "a test")
+	snippet, err := svc.Create(context.Background(), "hello world", "print('hi')", "a test", "")
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -141,7 +150,7 @@ func TestCreate_Success(t *testing.T) {
 func TestCreate_TrimsWhitespace(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	snippet, err := svc.Create(context.Background(), "  spaced out  ", "code", "  desc  ")
+	snippet, err := svc.Create(context.Background(), "  spaced out  ", "code", "  desc  ", "")
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -157,7 +166,7 @@ func TestCreate_TrimsWhitespace(t *testing.T) {
 func TestCreate_EmptyName(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	_, err := svc.Create(context.Background(), "", "code", "")
+	_, err := svc.Create(context.Background(), "", "code", "", "")
 	if err == nil {
 		t.Fatal("Create() should error on empty name")
 	}
@@ -169,7 +178,7 @@ func TestCreate_EmptyName(t *testing.T) {
 func TestCreate_WhitespaceOnlyName(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	_, err := svc.Create(context.Background(), "   ", "code", "")
+	_, err := svc.Create(context.Background(), "   ", "code", "", "")
 	if err == nil {
 		t.Fatal("Create() should error on whitespace-only name")
 	}
@@ -187,7 +196,7 @@ func TestCreate_NameTooLong(t *testing.T) {
 		longName += "a"
 	}
 
-	_, err := svc.Create(context.Background(), longName, "code", "")
+	_, err := svc.Create(context.Background(), longName, "code", "", "")
 	if err == nil {
 		t.Fatal("Create() should error on name that's too long")
 	}
@@ -204,13 +213,13 @@ func TestGetByID_Success(t *testing.T) {
 	svc, _ := newTestService(t)
 
 	// Create a snippet first
-	created, err := svc.Create(context.Background(), "test", "code", "")
+	created, err := svc.Create(context.Background(), "test", "code", "", "")
 	if err != nil {
 		t.Fatalf("setup: Create() error = %v", err)
 	}
 
 	// Fetch it
-	found, err := svc.GetByID(context.Background(), created.ID)
+	found, err := svc.GetByID(context.Background(), created.ID, "")
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}
@@ -222,7 +231,7 @@ func TestGetByID_Success(t *testing.T) {
 func TestGetByID_NotFound(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	_, err := svc.GetByID(context.Background(), "nonexistent")
+	_, err := svc.GetByID(context.Background(), "nonexistent", "")
 	if err == nil {
 		t.Fatal("GetByID() should error on nonexistent ID")
 	}
@@ -234,7 +243,7 @@ func TestGetByID_NotFound(t *testing.T) {
 func TestGetByID_EmptyID(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	_, err := svc.GetByID(context.Background(), "")
+	_, err := svc.GetByID(context.Background(), "", "")
 	if err == nil {
 		t.Fatal("GetByID() should error on empty ID")
 	}
@@ -250,7 +259,7 @@ func TestGetByID_EmptyID(t *testing.T) {
 func TestList_Empty(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	snippets, err := svc.List(context.Background(), 0, 0)
+	snippets, err := svc.List(context.Background(), 0, 0, "")
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
@@ -263,7 +272,7 @@ func TestList_ClampsBadValues(t *testing.T) {
 	svc, _ := newTestService(t)
 
 	// Should not error even with negative values
-	_, err := svc.List(context.Background(), -5, -10)
+	_, err := svc.List(context.Background(), -5, -10, "")
 	if err != nil {
 		t.Fatalf("List() should handle negative values gracefully, got error = %v", err)
 	}
@@ -276,9 +285,9 @@ func TestList_ClampsBadValues(t *testing.T) {
 func TestUpdate_Success(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	created, _ := svc.Create(context.Background(), "original", "old code", "old desc")
+	created, _ := svc.Create(context.Background(), "original", "old code", "old desc", "")
 
-	updated, err := svc.Update(context.Background(), created.ID, "new name", "new code", "new desc")
+	updated, err := svc.Update(context.Background(), created.ID, "new name", "new code", "new desc", "")
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
@@ -294,7 +303,7 @@ func TestUpdate_Success(t *testing.T) {
 func TestUpdate_NotFound(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	_, err := svc.Update(context.Background(), "nonexistent", "name", "code", "")
+	_, err := svc.Update(context.Background(), "nonexistent", "name", "code", "", "")
 	if err == nil {
 		t.Fatal("Update() should error on nonexistent ID")
 	}
@@ -310,14 +319,14 @@ func TestUpdate_NotFound(t *testing.T) {
 func TestDelete_Success(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	created, _ := svc.Create(context.Background(), "to delete", "code", "")
-	err := svc.Delete(context.Background(), created.ID)
+	created, _ := svc.Create(context.Background(), "to delete", "code", "", "")
+	err := svc.Delete(context.Background(), created.ID, "")
 	if err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
 
 	// Verify it's gone
-	_, err = svc.GetByID(context.Background(), created.ID)
+	_, err = svc.GetByID(context.Background(), created.ID, "")
 	if !errors.Is(err, apperror.ErrNotFound) {
 		t.Errorf("after delete: error = %v, want ErrNotFound", err)
 	}
@@ -326,11 +335,101 @@ func TestDelete_Success(t *testing.T) {
 func TestDelete_EmptyID(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	err := svc.Delete(context.Background(), "")
+	err := svc.Delete(context.Background(), "", "")
 	if err == nil {
 		t.Fatal("Delete() should error on empty ID")
 	}
 	if !errors.Is(err, apperror.ErrValidation) {
 		t.Errorf("error = %v, want ErrValidation", err)
 	}
+}
+
+// =========================================================================
+// OWNERSHIP TESTS
+// =========================================================================
+//
+// Snippets saved while signed in are private to their owner. Anyone else is
+// told the snippet doesn't exist (404), so IDs can't be used to discover them.
+// Snippets saved without an account have no owner and anyone may use them.
+
+func TestOwnership(t *testing.T) {
+	const alice, bob = "user-alice", "user-bob"
+	ctx := context.Background()
+
+	t.Run("create records the owner", func(t *testing.T) {
+		svc, repo := newTestService(t)
+		s, err := svc.Create(ctx, "mine", "code", "", alice)
+		require.NoError(t, err)
+		require.NotNil(t, repo.snippets[s.ID].UserID)
+		assert.Equal(t, alice, *repo.snippets[s.ID].UserID)
+	})
+
+	t.Run("create without an account leaves the snippet unowned", func(t *testing.T) {
+		svc, repo := newTestService(t)
+		s, err := svc.Create(ctx, "shared", "code", "", "")
+		require.NoError(t, err)
+		assert.Nil(t, repo.snippets[s.ID].UserID)
+	})
+
+	t.Run("the owner can read, update and delete", func(t *testing.T) {
+		svc, _ := newTestService(t)
+		s, _ := svc.Create(ctx, "mine", "code", "", alice)
+
+		_, err := svc.GetByID(ctx, s.ID, alice)
+		require.NoError(t, err)
+		_, err = svc.Update(ctx, s.ID, "renamed", "new", "", alice)
+		require.NoError(t, err)
+		require.NoError(t, svc.Delete(ctx, s.ID, alice))
+	})
+
+	for _, caller := range []struct{ name, id string }{{"another user", bob}, {"an anonymous visitor", ""}} {
+		t.Run(caller.name+" gets not found for someone's snippet", func(t *testing.T) {
+			svc, repo := newTestService(t)
+			s, _ := svc.Create(ctx, "mine", "secret code", "", alice)
+
+			_, err := svc.GetByID(ctx, s.ID, caller.id)
+			assert.True(t, errors.Is(err, apperror.ErrNotFound), "read: %v", err)
+
+			_, err = svc.Update(ctx, s.ID, "hijacked", "evil", "", caller.id)
+			assert.True(t, errors.Is(err, apperror.ErrNotFound), "update: %v", err)
+
+			err = svc.Delete(ctx, s.ID, caller.id)
+			assert.True(t, errors.Is(err, apperror.ErrNotFound), "delete: %v", err)
+
+			// ...and nothing changed
+			assert.Equal(t, "secret code", repo.snippets[s.ID].Code)
+		})
+	}
+
+	t.Run("anyone can use an unowned snippet", func(t *testing.T) {
+		svc, _ := newTestService(t)
+		s, _ := svc.Create(ctx, "shared", "code", "", "")
+
+		_, err := svc.GetByID(ctx, s.ID, bob)
+		require.NoError(t, err)
+		updated, err := svc.Update(ctx, s.ID, "", "edited", "", bob)
+		require.NoError(t, err)
+		assert.Nil(t, updated.UserID, "editing must not take ownership")
+		require.NoError(t, svc.Delete(ctx, s.ID, ""))
+	})
+
+	t.Run("lists only show the caller's own snippets", func(t *testing.T) {
+		svc, _ := newTestService(t)
+		_, _ = svc.Create(ctx, "alice's", "code", "", alice)
+		_, _ = svc.Create(ctx, "bob's", "code", "", bob)
+		_, _ = svc.Create(ctx, "shared", "code", "", "")
+
+		names := func(caller string) []string {
+			list, err := svc.List(ctx, 0, 0, caller)
+			require.NoError(t, err)
+			var out []string
+			for _, s := range list {
+				out = append(out, s.Name)
+			}
+			return out
+		}
+		assert.Equal(t, []string{"alice's"}, names(alice))
+		assert.Equal(t, []string{"bob's"}, names(bob))
+		assert.Equal(t, []string{"shared"}, names(""))
+	})
 }

@@ -243,20 +243,19 @@ func (s *Server) setupRoutes() error {
 			})
 		}
 
-		// Read-only snippet routes (no auth needed)
-		r.Get("/snippets", snippetHandler.HandleList)
-		r.Get("/snippets/{id}", snippetHandler.HandleGetByID)
-
-		// Mutating snippet routes — apply OptionalAuth if available
-		if tokenService != nil {
-			r.With(auth.OptionalAuth(tokenService)).Post("/snippets", snippetHandler.HandleCreate)
-			r.With(auth.OptionalAuth(tokenService)).Put("/snippets/{id}", snippetHandler.HandleUpdate)
-			r.With(auth.OptionalAuth(tokenService)).Delete("/snippets/{id}", snippetHandler.HandleDelete)
-		} else {
+		// Snippet routes. OptionalAuth identifies signed-in users (when auth is
+		// configured) because every route depends on who is asking: a user's
+		// snippets are private to them, including reading and listing.
+		r.Group(func(r chi.Router) {
+			if tokenService != nil {
+				r.Use(auth.OptionalAuth(tokenService))
+			}
+			r.Get("/snippets", snippetHandler.HandleList)
+			r.Get("/snippets/{id}", snippetHandler.HandleGetByID)
 			r.Post("/snippets", snippetHandler.HandleCreate)
 			r.Put("/snippets/{id}", snippetHandler.HandleUpdate)
 			r.Delete("/snippets/{id}", snippetHandler.HandleDelete)
-		}
+		})
 
 		// /api/execute only available when Docker executor is running
 		if s.exec != nil {

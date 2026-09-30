@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/sakif/coding-playground/internal/auth"
 	"github.com/sakif/coding-playground/internal/service"
 )
 
@@ -91,7 +92,7 @@ func (h *SnippetHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 
 	// Delegate to the service (it handles defaults and clamping)
-	snippets, err := h.service.List(r.Context(), limit, offset)
+	snippets, err := h.service.List(r.Context(), limit, offset, callerID(r))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -111,7 +112,7 @@ func (h *SnippetHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 func (h *SnippetHandler) HandleGetByID(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	snippet, err := h.service.GetByID(r.Context(), id)
+	snippet, err := h.service.GetByID(r.Context(), id, callerID(r))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -156,7 +157,7 @@ func (h *SnippetHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Delegate to service (handles validation, ID generation, persistence)
-	snippet, err := h.service.Create(r.Context(), req.Name, req.Code, req.Description)
+	snippet, err := h.service.Create(r.Context(), req.Name, req.Code, req.Description, callerID(r))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -192,7 +193,7 @@ func (h *SnippetHandler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	snippet, err := h.service.Update(r.Context(), id, req.Name, req.Code, req.Description)
+	snippet, err := h.service.Update(r.Context(), id, req.Name, req.Code, req.Description, callerID(r))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -212,10 +213,17 @@ func (h *SnippetHandler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 func (h *SnippetHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	if err := h.service.Delete(r.Context(), id); err != nil {
+	if err := h.service.Delete(r.Context(), id, callerID(r)); err != nil {
 		writeError(w, err)
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent) // 204 — success, no body
+}
+
+// callerID returns the signed-in user's ID (set by the OptionalAuth middleware),
+// or "" for visitors without an account. The service uses it for ownership rules.
+func callerID(r *http.Request) string {
+	id, _ := auth.UserIDFromContext(r.Context())
+	return id
 }

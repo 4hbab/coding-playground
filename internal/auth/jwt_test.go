@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"encoding/base64"
+	"strings"
 	"testing"
 	"time"
 )
@@ -60,12 +62,45 @@ func TestTokenService_TamperedToken(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 
-	// Tamper with the last character
-	tampered := token[:len(token)-1] + "X"
-	_, err = ts.Validate(tampered)
-	if err == nil {
-		t.Error("Validate: expected error for tampered token, got nil")
+	// A JWT is header.payload.signature (each base64url-encoded).
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token has %d parts, want 3", len(parts))
 	}
+
+	// Don't just change the last character: it carries only 4 bits of the
+	// signature, so some replacements decode to the same bytes and the test
+	// passed or failed depending on the token's timestamp.
+	t.Run("payload changed to another user", func(t *testing.T) {
+		payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			t.Fatalf("decoding payload: %v", err)
+		}
+		forged := strings.Replace(string(payload), "user-123", "user-999", 1)
+		if forged == string(payload) {
+			t.Fatal("payload doesn't contain the user ID")
+		}
+		tampered := parts[0] + "." + base64.RawURLEncoding.EncodeToString([]byte(forged)) + "." + parts[2]
+
+		if _, err := ts.Validate(tampered); err == nil {
+			t.Error("Validate: expected error for a forged payload, got nil")
+		}
+	})
+
+	t.Run("signature changed", func(t *testing.T) {
+		sig := []byte(parts[2])
+		// The first character carries 6 full bits, so changing it always changes the signature.
+		if sig[0] == 'A' {
+			sig[0] = 'B'
+		} else {
+			sig[0] = 'A'
+		}
+		tampered := parts[0] + "." + parts[1] + "." + string(sig)
+
+		if _, err := ts.Validate(tampered); err == nil {
+			t.Error("Validate: expected error for a changed signature, got nil")
+		}
+	})
 }
 
 func TestTokenService_WrongSecret(t *testing.T) {

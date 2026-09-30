@@ -153,12 +153,19 @@ A snippet:
 
 IDs are [xid](https://github.com/rs/xid) strings (20 characters, sortable by creation time).
 
-> **Ownership is not enforced yet.** Snippets are not linked to the account that saved them:
-> the list shows everyone's snippets, and anyone can update or delete any snippet by ID.
-> See "What's not done" in the README.
+**Ownership.** Every snippet route identifies the caller from the session cookie, if any.
+
+- A snippet saved while **signed in** belongs to that user and is private: only they can
+  list, read, update or delete it.
+- A snippet saved **without an account** has no owner and is shared: anyone can read, update
+  or delete it, and editing it never makes it yours.
+
+For anyone else, someone's private snippet behaves exactly like a missing one (`404 not_found`),
+so an ID can't be used to find out that a snippet exists. The owner is never included in responses.
 
 ### `GET /api/snippets`
-Lists snippets, newest first. Auth: none.
+Lists snippets, newest first. Auth: optional. Signed in: your own snippets. Not signed in:
+the shared snippets (saved without an account).
 
 | Query | Default | Rule |
 |---|---|---|
@@ -168,10 +175,10 @@ Lists snippets, newest first. Auth: none.
 `200` → array of snippets (empty array when there are none).
 
 ### `GET /api/snippets/{id}`
-One snippet. Auth: none. `200` → snippet · `404` → `not_found`.
+One snippet. Auth: optional. `200` → snippet · `404` → `not_found` (missing, or someone else's).
 
 ### `POST /api/snippets`
-Creates a snippet. Auth: optional.
+Creates a snippet. Auth: optional. Signed in, the snippet is yours and private; otherwise it is shared.
 
 ```json
 { "name": "fibonacci", "code": "def fib(n): ...", "description": "optional" }
@@ -189,10 +196,10 @@ Creates a snippet. Auth: optional.
 Updates a snippet. Auth: optional. Same body as create; an empty `name` keeps the current
 name, while `code` and `description` are always replaced.
 
-`200` → the updated snippet · `400` · `404`.
+`200` → the updated snippet · `400` · `404` (missing, or someone else's).
 
 ### `DELETE /api/snippets/{id}`
-Deletes a snippet. Auth: optional. `204` (no body) · `404`.
+Deletes a snippet. Auth: optional. `204` (no body) · `404` (missing, or someone else's).
 
 ---
 

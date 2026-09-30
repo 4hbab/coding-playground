@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/sakif/coding-playground/internal/auth"
 	"github.com/sakif/coding-playground/internal/executor"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -116,5 +117,52 @@ func TestServer(t *testing.T) {
 		assert.Equal(t, http.StatusOK, s.do(http.MethodPost, "/api/execute", executeBody(), alice).Code)
 		assert.Equal(t, http.StatusTooManyRequests, s.do(http.MethodPost, "/api/execute", executeBody(), alice).Code)
 		assert.Equal(t, http.StatusOK, s.do(http.MethodPost, "/api/execute", executeBody(), bob).Code)
+	})
+
+	t.Run("signed-in users' snippets are private to them", func(t *testing.T) {
+		const secret = "test-secret-that-is-at-least-32-bytes-long"
+		s := newTestServer(t, Config{JWTSecret: secret}, nil)
+		tokens, err := auth.NewTokenService(secret)
+		require.NoError(t, err)
+		signedIn := func(userID string) map[string]string {
+			token, err := tokens.Generate(userID)
+			require.NoError(t, err)
+			return map[string]string{"Cookie": auth.CookieName + "=" + token, "Content-Type": "application/json"}
+		}
+		alice, bob, anonymous := signedIn("alice"), signedIn("bob"), map[string]string{"Content-Type": "application/json"}
+		body := func(json string) io.Reader { return bytes.NewBufferString(json) }
+		count := func(headers map[string]string) int {
+			rr := s.do(http.MethodGet, "/api/snippets", nil, headers)
+			require.Equal(t, http.StatusOK, rr.Code)
+			var list []map[string]any
+			require.NoError(t, json.NewDecoder(rr.Body).Decode(&list))
+			return len(list)
+		}
+
+		rr := s.do(http.MethodPost, "/api/snippets", body(`{"name":"mine","code":"secret"}`), alice)
+		require.Equal(t, http.StatusCreated, rr.Code)
+		var created map[string]any
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&created))
+		assert.NotContains(t, created, "userId", "the owner's ID is never sent to clients")
+		path := "/api/snippets/" + created["id"].(string)
+
+		assert.Equal(t, http.StatusOK, s.do(http.MethodGet, path, nil, alice).Code)
+		for name, other := range map[string]map[string]string{"bob": bob, "anonymous": anonymous} {
+			assert.Equal(t, http.StatusNotFound, s.do(http.MethodGet, path, nil, other).Code, name+" read")
+			assert.Equal(t, http.StatusNotFound, s.do(http.MethodPut, path, body(`{"code":"hijacked"}`), other).Code, name+" update")
+			assert.Equal(t, http.StatusNotFound, s.do(http.MethodDelete, path, nil, other).Code, name+" delete")
+		}
+		assert.Equal(t, 1, count(alice))
+		assert.Equal(t, 0, count(bob))
+		assert.Equal(t, 0, count(anonymous))
+
+		// A snippet saved without an account is shared: anyone can edit it.
+		rr = s.do(http.MethodPost, "/api/snippets", body(`{"name":"shared","code":"x"}`), anonymous)
+		require.Equal(t, http.StatusCreated, rr.Code)
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&created))
+		assert.Equal(t, http.StatusOK, s.do(http.MethodPut, "/api/snippets/"+created["id"].(string), body(`{"code":"edited by bob"}`), bob).Code)
+		assert.Equal(t, 1, count(anonymous))
+
+		assert.Equal(t, http.StatusNoContent, s.do(http.MethodDelete, path, nil, alice).Code)
 	})
 }

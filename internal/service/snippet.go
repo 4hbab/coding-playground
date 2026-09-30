@@ -110,7 +110,10 @@ func NewSnippetService(repo repository.SnippetRepository, logger *slog.Logger) *
 //     We return apperror.ValidationFailed, NOT http.StatusBadRequest.
 //     The handler translates domain errors to HTTP status codes.
 //     This keeps the service layer HTTP-agnostic.
-func (s *SnippetService) Create(ctx context.Context, name, code, description string) (*model.Snippet, error) {
+//
+// callerID is the signed-in user's ID, or "" for visitors without an account.
+// A signed-in user's snippet is private to them; see ownership rules below.
+func (s *SnippetService) Create(ctx context.Context, name, code, description, callerID string) (*model.Snippet, error) {
 	// === VALIDATION ===
 	// Trim whitespace first — " hello " becomes "hello"
 	name = strings.TrimSpace(name)
@@ -134,6 +137,9 @@ func (s *SnippetService) Create(ctx context.Context, name, code, description str
 		Code:        code,
 		Description: strings.TrimSpace(description),
 	}
+	if callerID != "" {
+		snippet.UserID = &callerID
+	}
 
 	// === DELEGATE TO REPOSITORY ===
 	// The repo handles ID generation, timestamps, and SQL.
@@ -154,9 +160,21 @@ func (s *SnippetService) Create(ctx context.Context, name, code, description str
 	return snippet, nil
 }
 
+// OWNERSHIP RULES:
+//   - A snippet saved by a signed-in user belongs to them. Only they can see,
+//     update or delete it.
+//   - A snippet saved without an account has no owner. It is a shared scratch
+//     space: anyone can see, update or delete it (and editing never claims it).
+//
+// Everyone else is told the snippet doesn't exist (ErrNotFound), not that it is
+// forbidden. A 403 would confirm that the ID belongs to someone's private snippet.
+func canAccess(snippet *model.Snippet, callerID string) bool {
+	return snippet.UserID == nil || *snippet.UserID == callerID
+}
+
 // GetByID retrieves a snippet by its ID.
-// Returns apperror.ErrNotFound if the snippet doesn't exist.
-func (s *SnippetService) GetByID(ctx context.Context, id string) (*model.Snippet, error) {
+// Returns apperror.ErrNotFound if the snippet doesn't exist or belongs to someone else.
+func (s *SnippetService) GetByID(ctx context.Context, id, callerID string) (*model.Snippet, error) {
 	// Validate the ID isn't empty — catch obvious mistakes early
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -173,6 +191,10 @@ func (s *SnippetService) GetByID(ctx context.Context, id string) (*model.Snippet
 		return nil, err // Let the error propagate (it's already a proper apperror)
 	}
 
+	if !canAccess(snippet, callerID) {
+		return nil, apperror.NotFound("snippet", id)
+	}
+
 	return snippet, nil
 }
 
@@ -184,7 +206,10 @@ func (s *SnippetService) GetByID(ctx context.Context, id string) (*model.Snippet
 //
 // Example: page 3 with 20 items → limit=20, offset=40
 // The service enforces sane limits so callers can't request 1 million rows.
-func (s *SnippetService) List(ctx context.Context, limit, offset int) ([]model.Snippet, error) {
+//
+// A signed-in caller sees only their own snippets; a caller without an account
+// sees the shared ones (saved without an account).
+func (s *SnippetService) List(ctx context.Context, limit, offset int, callerID string) ([]model.Snippet, error) {
 	// Clamp limit to a sane range
 	if limit <= 0 {
 		limit = DefaultListLimit
@@ -199,8 +224,9 @@ func (s *SnippetService) List(ctx context.Context, limit, offset int) ([]model.S
 	}
 
 	snippets, err := s.repo.List(ctx, repository.ListOptions{
-		Limit:  limit,
-		Offset: offset,
+		Limit:   limit,
+		Offset:  offset,
+		OwnerID: callerID,
 	})
 	if err != nil {
 		s.logger.Error("failed to list snippets", slog.String("error", err.Error()))
@@ -221,15 +247,9 @@ func (s *SnippetService) List(ctx context.Context, limit, offset int) ([]model.S
 // - We can validate the new values against the old ones if needed
 // - We return the full updated snippet to the caller
 // - The "not found" error comes from GetByID, which is consistent
-func (s *SnippetService) Update(ctx context.Context, id, name, code, description string) (*model.Snippet, error) {
-	// Validate ID
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return nil, apperror.ValidationFailed("id", "snippet ID is required")
-	}
-
-	// Fetch existing snippet — returns NotFound if it doesn't exist
-	snippet, err := s.repo.GetByID(ctx, id)
+func (s *SnippetService) Update(ctx context.Context, id, name, code, description, callerID string) (*model.Snippet, error) {
+	// Fetch existing snippet — returns NotFound if it doesn't exist or isn't the caller's
+	snippet, err := s.GetByID(ctx, id, callerID)
 	if err != nil {
 		return nil, err
 	}
@@ -269,12 +289,13 @@ func (s *SnippetService) Update(ctx context.Context, id, name, code, description
 }
 
 // Delete removes a snippet by its ID.
-// Returns apperror.ErrNotFound if the snippet doesn't exist.
-func (s *SnippetService) Delete(ctx context.Context, id string) error {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return apperror.ValidationFailed("id", "snippet ID is required")
+// Returns apperror.ErrNotFound if the snippet doesn't exist or isn't the caller's.
+func (s *SnippetService) Delete(ctx context.Context, id, callerID string) error {
+	// Fetch first to apply the ownership rules
+	if _, err := s.GetByID(ctx, id, callerID); err != nil {
+		return err
 	}
+	id = strings.TrimSpace(id)
 
 	if err := s.repo.Delete(ctx, id); err != nil {
 		return err

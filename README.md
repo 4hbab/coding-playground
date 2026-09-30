@@ -192,6 +192,10 @@ Other hardening for a public site:
   only what the page loads, HSTS over HTTPS, `nosniff`, and no framing.
 - **Sessions** are a JWT in an HttpOnly, SameSite=Lax cookie (Secure over HTTPS), so page
   scripts can't read it. The OAuth `state` parameter is checked against a cookie to stop CSRF.
+- **Private snippets**: a snippet saved while signed in can only be listed, read, changed or
+  deleted by its owner. For anyone else it looks like it doesn't exist (`404`, not `403`), so
+  IDs can't be probed. Snippets saved without an account are a shared scratch space, and the
+  UI says so.
 
 ## ⚖️ Trade-offs
 
@@ -217,9 +221,6 @@ Other hardening for a public site:
 
 ## 🚧 What's not done
 
-- **Snippets are not tied to accounts.** Signing in works, but saved snippets aren't linked to
-  the user: everyone sees every snippet, and anyone can edit or delete any snippet. The sign-in
-  prompt in the UI says otherwise. (The database already has a `user_id` column that is unused.)
 - **No `input()` / stdin** and no extra packages (`pip`) in server mode.
 - **Stronger isolation** (gVisor or microVMs) and a sandbox host separate from the app.
 - **The sandbox image isn't pinned** to a digest (`python:3.12-alpine` can change under us),

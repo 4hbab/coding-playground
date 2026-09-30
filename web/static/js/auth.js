@@ -75,6 +75,8 @@ async function logout() {
     }
     currentUser = null;
     renderLoggedOut();
+    // A signed-in user's snippets are private, so reload the list without them
+    await refreshSnippetList();
     // Close dropdown if open
     const dropdown = document.getElementById('auth-dropdown');
     if (dropdown) dropdown.classList.remove('open');

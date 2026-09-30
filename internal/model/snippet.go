@@ -18,6 +18,7 @@ type Snippet struct {
 	Name        string    `json:"name"        db:"name"`
 	Code        string    `json:"code"        db:"code"`
 	Description string    `json:"description" db:"description"`
+	UserID      *string   `json:"-"           db:"user_id"` // owner, or nil if saved without an account; never sent to clients
 	CreatedAt   time.Time `json:"createdAt"   db:"created_at"`
 	UpdatedAt   time.Time `json:"updatedAt"   db:"updated_at"`
 }
