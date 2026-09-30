@@ -51,15 +51,17 @@ flowchart LR
         vpc["Workers VPC service"]
     end
 
-    subgraph host["Host: Docker Desktop"]
-        cloudflared["cloudflared<br/>tunnel connector"]
-        app["Go server<br/>rate limits, CSP, auth"]
-        db[("SQLite<br/>users, snippets")]
-        docker["Docker daemon"]
-        subgraph pool["Pre-warmed sandbox pool"]
-            s1["python:3.12-alpine"]
-            s2["python:3.12-alpine"]
-            s3["python:3.12-alpine"]
+    subgraph host["Host: a Mac"]
+        cloudflared["cloudflared<br/>system service"]
+        subgraph compose["Docker Desktop"]
+            app["Go server<br/>rate limits, CSP, auth"]
+            db[("SQLite<br/>users, snippets")]
+            docker["Docker daemon"]
+            subgraph pool["Pre-warmed sandbox pool"]
+                s1["python:3.12-alpine"]
+                s2["python:3.12-alpine"]
+                s3["python:3.12-alpine"]
+            end
         end
     end
 
@@ -69,7 +71,7 @@ flowchart LR
     ui -- "HTTPS" --> worker
     worker --> vpc
     vpc -- "Cloudflare Tunnel" --> cloudflared
-    cloudflared --> app
+    cloudflared -- "127.0.0.1:8080" --> app
     app --> db
     app -- "Server mode: Docker API" --> docker
     docker --> pool
@@ -288,20 +290,20 @@ The sandbox limits are code, not settings: see [`DefaultConfig`](internal/execut
 
 ## ☁️ Deployment
 
-The production stack is [`docker-compose.yml`](docker-compose.yml): the app, built from the
-[`Dockerfile`](Dockerfile) (a static Go binary on Alpine, running as a non-root user), and
-`cloudflared`, which connects the host to Cloudflare. Visitors use the Cloudflare Worker's
-`workers.dev` address; the Worker adds the visitor's IP as `X-Client-IP` and forwards the
-request through a Workers VPC service to the tunnel.
+The app runs with [`docker-compose.yml`](docker-compose.yml), built from the
+[`Dockerfile`](Dockerfile) (a static Go binary on Alpine, running as a non-root user), and listens
+on `127.0.0.1:8080` only. `cloudflared` runs on the host as a system service and connects it to
+Cloudflare. Visitors use the Cloudflare Worker's `workers.dev` address; the Worker adds the
+visitor's IP as `X-Client-IP` and forwards the request through a Workers VPC service and the
+tunnel to `127.0.0.1:8080`.
 
 ```bash
-cp .env.production.example .env.production        # fill in PUBLIC_URL, secrets and TUNNEL_TOKEN
-docker compose --profile tunnel up -d --build     # app + tunnel
-docker compose down                               # stops everything and removes the sandboxes
+cp .env.production.example .env.production   # fill in PUBLIC_URL and the secrets
+docker compose up -d --build                 # start or update the app
+docker compose down                          # stop it and remove the sandboxes
 ```
 
-Without `--profile tunnel`, only the app starts, on `http://127.0.0.1:8080`. SQLite lives in the
-`app-data` volume, so it survives restarts and rebuilds.
+SQLite lives in the `app-data` volume, so it survives restarts and rebuilds.
 
 Setting up the Cloudflare side (tunnel, VPC service, Worker), keeping the site up on a Mac,
 backups and troubleshooting: **[docs/DEPLOY.md](docs/DEPLOY.md)**.

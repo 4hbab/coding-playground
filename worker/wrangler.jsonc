@@ -9,7 +9,7 @@
   "observability": { "enabled": true },
   "vpc_services": [
     {
-      // pyplayground-app: over the "pyplayground" tunnel to app:8080 (the compose service)
+      // pyplayground-app: over the "pyplayground" tunnel to 127.0.0.1:8080 on the host
       "binding": "APP",
       "service_id": "01a0ee96-6dfc-7191-ada8-003a7dee325e",
       "remote": true

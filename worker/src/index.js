@@ -3,8 +3,8 @@
 // ===================================================================
 // Visitors reach https://pyplayground.<subdomain>.workers.dev. This Worker
 // forwards every request to the Go app through a Workers VPC service, which
-// travels over a Cloudflare Tunnel to the host running docker compose. The host
-// has no ports open to the internet.
+// travels over a Cloudflare Tunnel to the host (cloudflared → 127.0.0.1:8080).
+// The host has no ports open to the internet.
 //
 // The app rate-limits by visitor IP and trusts exactly one header for it,
 // X-Client-IP (see CLIENT_IP_HEADER). This Worker is what makes that safe: it
@@ -16,7 +16,7 @@
 const CLIENT_IP_HEADERS = ['x-client-ip', 'x-forwarded-for', 'x-real-ip', 'true-client-ip', 'forwarded'];
 
 // The VPC service decides where requests go; this origin only sets the Host header.
-const APP_ORIGIN = 'http://app:8080';
+const APP_ORIGIN = 'http://127.0.0.1:8080';
 
 /**
  * Build the request sent to the app from the visitor's request.

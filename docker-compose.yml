@@ -1,9 +1,11 @@
-# PyPlayground production stack: the app plus the Cloudflare Tunnel connector.
+# PyPlayground production stack.
 #
-#   docker compose up -d --build                    # app only, on http://127.0.0.1:8080
-#   docker compose --profile tunnel up -d --build   # app + tunnel (public via the Worker)
+#   docker compose up -d --build     # start (or update) the app on http://127.0.0.1:8080
+#   docker compose down              # stop it and remove the sandbox containers
 #
 # Settings come from .env.production (copy .env.production.example).
+# Visitors reach the app through Cloudflare: cloudflared runs on the host as a system
+# service and forwards tunnel traffic to 127.0.0.1:8080 (see docs/DEPLOY.md).
 name: pyplayground
 
 services:
@@ -25,18 +27,9 @@ services:
       - app-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
-      # Local access only. Visitors come in through the tunnel, never this port.
+      # Bound to localhost only: the host's cloudflared forwards tunnel traffic here,
+      # and nothing outside the machine can connect directly.
       - "127.0.0.1:8080:8080"
-
-  cloudflared:
-    image: cloudflare/cloudflared:2026.9.1@sha256:b269e8abd07a5bf6f3f4be65d5050b2174eca89c56a0241a8ff32a16aec454e4
-    profiles: ["tunnel"]
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run
-    env_file: .env.production # reads TUNNEL_TOKEN
-    depends_on:
-      app:
-        condition: service_healthy
 
 volumes:
   app-data:

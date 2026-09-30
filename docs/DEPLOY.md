@@ -5,22 +5,23 @@ Everything here is free: a Cloudflare account (Workers free plan) and a machine 
 
 ```
 Visitor ──HTTPS──▶ Worker (pyplayground.<subdomain>.workers.dev)
-                     │  Workers VPC service "pyplayground-app"
+                     │  Workers VPC service "pyplayground-app" → 127.0.0.1:8080
                      ▼
                    Cloudflare Tunnel "pyplayground"
                      │  outbound connection from the host; no open ports
                      ▼
-Host (Docker) ─ cloudflared ──▶ app:8080 (Go server) ──▶ sandbox containers
-                                   └─ SQLite in the app-data volume
+Host ─ cloudflared (system service) ──▶ 127.0.0.1:8080 ─ Docker: Go server ──▶ sandbox containers
+                                                              └─ SQLite in the app-data volume
 ```
 
 - **Worker** ([`worker/`](../worker)): the public address. It overwrites `X-Client-IP` with the
   visitor's real IP (the app uses it for rate limits) and forwards the request through a
   [Workers VPC](https://developers.cloudflare.com/workers-vpc/) service binding.
-- **Tunnel + cloudflared**: `cloudflared` runs in Docker Compose on the host and keeps an
-  outbound connection to Cloudflare. The VPC service sends requests down it to `app:8080`.
-- **App**: the Go server, started by [`docker-compose.yml`](../docker-compose.yml). It starts
-  the sandbox containers through the host's Docker socket.
+- **Tunnel + cloudflared**: `cloudflared` runs on the host as a system service (it starts at
+  boot) and keeps an outbound connection to Cloudflare. The VPC service sends requests down it
+  to `127.0.0.1:8080`.
+- **App**: the Go server, started by [`docker-compose.yml`](../docker-compose.yml) and bound to
+  `127.0.0.1:8080` only. It starts the sandbox containers through the host's Docker socket.
 
 The live site: <https://pyplayground.crowdpulse-labs.workers.dev>, hosted on a personal Mac,
 so it is up only while that Mac is on.
@@ -44,25 +45,37 @@ npx wrangler tunnel create pyplayground
 # → ID: <TUNNEL_ID>
 
 npx wrangler vpc service create pyplayground-app --type http \
-  --tunnel-id <TUNNEL_ID> --hostname app --http-port 8080
+  --tunnel-id <TUNNEL_ID> --ipv4 127.0.0.1 --http-port 8080
 # → Created VPC service: <SERVICE_ID>
 ```
 
-`--hostname app` is the app's name inside Docker Compose. `cloudflared` looks it up on the host,
-so no IP addresses are involved.
+`127.0.0.1:8080` is where the app listens on the host. `cloudflared` runs on the same machine,
+so the address is local to it.
 
 Put `<SERVICE_ID>` in [`worker/wrangler.jsonc`](../worker/wrangler.jsonc) under `vpc_services`.
 
-### 3. Deploy the Worker
+### 3. Run cloudflared on the host
+
+Get the tunnel token: Cloudflare dashboard → **Networking** → **Tunnels** → `pyplayground` →
+**Add a replica**. The token is the long `eyJ…` value in the install command. Keep it secret.
+
+```bash
+brew install cloudflared                      # on Linux: install the cloudflared package
+sudo cloudflared service install <TOKEN>      # runs it as a system service, started at boot
+```
+
+`npx wrangler tunnel info pyplayground` should now show `Status: healthy`.
+
+### 4. Deploy the Worker
 
 ```bash
 npx wrangler deploy
 # → https://pyplayground.<subdomain>.workers.dev
 ```
 
-Until the tunnel is running, the Worker answers `503` "PyPlayground is offline".
+Until the app is running, the Worker answers `503` "PyPlayground is offline".
 
-### 4. Create a GitHub OAuth app for production
+### 5. Create a GitHub OAuth app for production
 
 A GitHub OAuth app has a single callback URL, so production needs its own app (keep the
 localhost one for development). At <https://github.com/settings/developers> → **New OAuth App**:
@@ -74,7 +87,7 @@ localhost one for development). At <https://github.com/settings/developers> → 
 
 Then generate a client secret.
 
-### 5. Fill in `.env.production`
+### 6. Fill in `.env.production`
 
 ```bash
 cp .env.production.example .env.production
@@ -83,22 +96,21 @@ chmod 600 .env.production
 
 | Setting | Value |
 |---|---|
-| `PUBLIC_URL` | The Worker's URL from step 3 |
+| `PUBLIC_URL` | The Worker's URL from step 4 |
 | `CLIENT_IP_HEADER` | `X-Client-IP` (already set) |
 | `JWT_SECRET` | `openssl rand -hex 32` |
-| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | From step 4 |
-| `TUNNEL_TOKEN` | Cloudflare dashboard → **Networking** → **Tunnels** → `pyplayground` → **Add a replica**: the `eyJ…` value in the install command |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | From step 5 |
 
 `.env.production` is gitignored. Never commit it.
 
-### 6. Start the stack
+### 7. Start the app
 
 ```bash
-docker compose --profile tunnel up -d --build
-docker compose ps          # app should be "healthy", cloudflared "Up"
+docker compose up -d --build
+docker compose ps          # app should be "healthy"
 ```
 
-### 7. Check it
+### 8. Check it
 
 ```bash
 URL=https://pyplayground.<subdomain>.workers.dev
@@ -112,8 +124,9 @@ Then open the URL, run code in both modes, and sign in with GitHub.
 
 ## Keeping it up on a Mac
 
-- Docker Desktop → Settings → General → **Start Docker Desktop when you sign in**. The
-  containers use `restart: unless-stopped`, so they come back with Docker.
+- `cloudflared` is a system service: it starts at boot and restarts if it crashes.
+- Docker Desktop → Settings → General → **Start Docker Desktop when you sign in**. The app
+  uses `restart: unless-stopped`, so it comes back with Docker.
 - Stop the Mac from sleeping while the site should be up: System Settings → Battery (or
   Energy) → **Prevent automatic sleeping when the display is off** (on power), or run
   `caffeinate -dims` in a terminal and leave it open.
@@ -123,12 +136,13 @@ Then open the URL, run code in both modes, and sign in with GitHub.
 
 | Task | Command |
 |---|---|
-| Deploy a new version of the app | `git pull && docker compose --profile tunnel up -d --build` |
+| Deploy a new version of the app | `git pull && docker compose up -d --build` |
 | Deploy a new version of the Worker | `cd worker && npx wrangler deploy` |
 | App logs | `docker compose logs -f app` |
-| Tunnel logs | `docker compose logs -f cloudflared` |
+| Tunnel logs (macOS) | `tail -f /Library/Logs/com.cloudflare.cloudflared.err.log` |
+| Tunnel status | `cd worker && npx wrangler tunnel info pyplayground` |
 | Worker logs | `cd worker && npx wrangler tail` |
-| Take the site offline | `docker compose --profile tunnel down` (data is kept in the `app-data` volume) |
+| Take the site offline | `docker compose down` (data is kept in the `app-data` volume) |
 | Back up the database | `docker compose stop app && docker compose cp app:/data ./backup-$(date +%F) && docker compose start app` |
 
 The backup stops the app briefly because SQLite runs in WAL mode: copying the files while it
@@ -138,16 +152,17 @@ writes could produce an inconsistent copy.
 
 | Symptom | Likely cause |
 |---|---|
-| "PyPlayground is offline" | The host is asleep, Docker isn't running, or `cloudflared` isn't connected: `docker compose ps`, `docker compose logs cloudflared` |
+| "PyPlayground is offline" | The host is asleep, Docker or the app isn't running (`docker compose ps`), or `cloudflared` isn't connected (`wrangler tunnel info pyplayground`, tunnel logs) |
 | Sign-in fails with "redirect_uri is not associated" | The OAuth app's callback URL doesn't match `PUBLIC_URL` + `/auth/github/callback` |
-| Sign-in button does nothing / 404 on `/auth/github/login` | `GITHUB_CLIENT_ID` or `GITHUB_CLIENT_SECRET` missing; the app logs a warning at startup |
+| 404 on `/auth/github/login` | `GITHUB_CLIENT_ID` or `GITHUB_CLIENT_SECRET` missing; the app logs a warning at startup |
 | No Server option in the toggle | The app can't reach Docker: check the socket mount and `docker compose logs app` |
 | Everyone shares one rate limit | `CLIENT_IP_HEADER` isn't `X-Client-IP`, so every request counts as the tunnel's address |
 
 ## Removing everything
 
 ```bash
-docker compose --profile tunnel down -v    # -v also deletes the database volume
+docker compose down -v                     # -v also deletes the database volume
+sudo cloudflared service uninstall
 cd worker
 npx wrangler delete pyplayground
 npx wrangler vpc service delete <SERVICE_ID>
