@@ -4,6 +4,9 @@ A Python playground with a **Go** backend. Code runs either **in the browser** (
 to WebAssembly by [Pyodide](https://pyodide.org)) or **on the server** in a locked-down Docker
 container, and you switch between the two with one click.
 
+**Live:** <https://pyplayground.crowdpulse-labs.workers.dev> (hosted on a personal Mac, so it's
+up while that Mac is on; otherwise you'll see an "offline" page)
+
 - [Screenshots](#-screenshots)
 - [Architecture](#-architecture)
 - [Design decisions](#-design-decisions) — two ways to run Python, pool warm-up, sandbox limits
@@ -300,6 +303,9 @@ docker compose down                               # stops everything and removes
 Without `--profile tunnel`, only the app starts, on `http://127.0.0.1:8080`. SQLite lives in the
 `app-data` volume, so it survives restarts and rebuilds.
 
+Setting up the Cloudflare side (tunnel, VPC service, Worker), keeping the site up on a Mac,
+backups and troubleshooting: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
+
 ## 🧪 Testing
 
 - **Unit tests** for handlers, services, middleware (rate limiting, client IP, headers), JWT
@@ -325,7 +331,8 @@ Without `--profile tunnel`, only the app starts, on `http://127.0.0.1:8080`. SQL
 | `internal/repository/` | Storage interfaces; `sqlite/` holds the SQLite implementation and migrations |
 | `internal/model/`, `internal/apperror/` | Data types and domain errors |
 | `web/templates/`, `web/static/` | HTML templates, CSS and JavaScript (including the Pyodide worker) |
-| `docs/API.md` | HTTP API specification |
+| `worker/` | Cloudflare Worker: the public entry point, forwards to the app through Workers VPC |
+| `docs/API.md`, `docs/DEPLOY.md` | HTTP API specification; deployment guide |
 
 ## 🧠 Go concepts covered
 
